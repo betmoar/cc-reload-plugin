@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y jq shellcheck
+
+      - name: Validate JSON
+        run: |
+          jq -e . .claude-plugin/plugin.json > /dev/null
+          jq -e . hooks/hooks.json > /dev/null
+
+      - name: Syntax check hooks
+        run: |
+          for f in hooks/*.sh; do bash -n "$f"; done
+
+      - name: Shellcheck hooks
+        run: shellcheck -S warning hooks/*.sh
+
+      - name: Hook smoke tests
+        run: bash tests/test-hooks.sh

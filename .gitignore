@@ -1,0 +1,13 @@
+# cc-reload runtime state (per-project, not source)
+.reload/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs
+*.log
