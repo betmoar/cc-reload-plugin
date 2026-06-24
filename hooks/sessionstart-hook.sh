@@ -36,22 +36,39 @@ fi
 BODY="$(cat "$DIGEST")"
 rm -f "$PENDING"   # consume the arm
 
-# Visible confirmation. additionalContext is SILENT — Claude Code wraps it in a
-# system reminder the model reads on its next request, but the user sees nothing
-# and no turn is taken. Without a systemMessage the auto-reload looks like it
-# never fired (the symptom that sent users reaching for a manual /reload). The
-# top-level systemMessage IS shown, so surface a one-line sitrep — the digest's
-# `intent` — to confirm the restore. /reload still re-prints the full report.
+# systemMessage fires AFTER /clear's screen wipe and is shown in the blank
+# terminal — it is the reliable visible signal for all trigger sources. Keep it.
+# additionalContext carries the full digest for Claude to read.
 INTENT="$(awk -F'"' '/^intent:/{print $2; exit}' "$DIGEST" 2>/dev/null)"
-MSG="🔄 cc-reload restored this session from .reload/session.md (reset: ${SOURCE})."
-[ -n "$INTENT" ] && MSG="$MSG Intent: ${INTENT}"
-MSG="$MSG — context loaded; just continue, or run /reload for the full sitrep."
+
+# Extract first bullet from each section for summary
+_first_bullet() {
+  awk "/^## ${1}/{f=1;next} f && /^- /{print;exit} f && /^##/{exit}" "$DIGEST" 2>/dev/null | sed 's/^- //'
+}
+_truncate() { local s="$1" n="${2:-60}"; [ ${#s} -gt $n ] && printf '%s…' "${s:0:$n}" || printf '%s' "$s"; }
+
+DONE_LINE="$(_first_bullet 'Done this stretch')"
+NEXT_LINE="$(_first_bullet 'Next concrete step')"
+INFLIGHT_LINE="$(_first_bullet 'In flight')"
+
+MSG="🔄 cc-reload (${SOURCE})"
+[ -n "$INTENT" ] && MSG="$MSG — $(_truncate "$INTENT" 80)"
+if [ -n "$DONE_LINE" ]; then
+  MSG="$MSG | ✓ $(_truncate "$DONE_LINE" 60)"
+fi
+if [ -n "$INFLIGHT_LINE" ] && ! printf '%s' "$INFLIGHT_LINE" | grep -qi 'nothing'; then
+  MSG="$MSG | ⚡ $(_truncate "$INFLIGHT_LINE" 55)"
+fi
+if [ -n "$NEXT_LINE" ]; then
+  MSG="$MSG | → $(_truncate "$NEXT_LINE" 60)"
+fi
+MSG="$MSG | /reload for full sitrep"
 
 jq -n --arg ctx "$BODY" --arg src "$SOURCE" --arg msg "$MSG" '{
   systemMessage: $msg,
   hookSpecificOutput: {
     hookEventName: "SessionStart",
-    additionalContext: ("cc-reload restored this session from .reload/session.md (reset: " + $src + "). Resume from the \"Next concrete step\".\n\n" + $ctx)
+    additionalContext: ("cc-reload restored this session (trigger: " + $src + "). Resume from the \"Next concrete step\".\n\n" + $ctx)
   }
 }'
 exit 0

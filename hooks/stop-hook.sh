@@ -53,16 +53,7 @@ PCT="$(cfg context_budget_pct)"; [[ "$PCT" =~ ^[0-9]+$ ]] || PCT=45
 TRANSCRIPT="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""')"
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
-# Window: config override wins (set it for your main model), else the value
-# SessionStart stamped from the live model, else assume a large 1M window. The
-# floor is deliberately optimistic: when the window is entirely unknown (no
-# override, no stamp yet) a 1M session must not be nagged early, so we prefer a
-# late checkpoint over a false-early one. The >200K-used self-heal below still
-# rescues a stale *low* stamp.
-WINDOW="$(cfg context_window)"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(kv window "$MODELFILE")"
-[[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW=1000000
-
-# Best-effort: last assistant turn's total input tokens from the transcript.
+# Best-effort: last assistant turn's total input tokens + model id from the transcript.
 USED="$(jq -rs '
     [ .[] | select(.message.role=="assistant") ] | last
     | (.message.usage // {})
@@ -72,11 +63,29 @@ if ! [[ "$USED" =~ ^[0-9]+$ ]] || [ "$USED" -le 0 ]; then
   USED=$(( $(wc -c < "$TRANSCRIPT" 2>/dev/null || echo 0) / 4 ))   # fallback estimate
 fi
 
+# Refresh model stamp from the transcript so mid-session /model switches are
+# detected. The last assistant turn carries the model id that actually ran —
+# if it differs from the stamped value, rewrite both model and window so this
+# and all future turns compute occupancy against the right window.
+LIVE_MODEL="$(jq -rs '[ .[] | select(.message.role=="assistant") ] | last | .message.model // ""' "$TRANSCRIPT" 2>/dev/null)"
+if [ -n "$LIVE_MODEL" ]; then
+  STAMPED_MODEL="$(kv model "$MODELFILE")"
+  if [ "$LIVE_MODEL" != "$STAMPED_MODEL" ]; then
+    ensure_reload_dir
+    printf 'model: %s\nwindow: %s\n' "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")" > "$MODELFILE"
+  fi
+fi
+
+# Window: config override wins (set it for your main model), else the value
+# stamped from the live model, else assume a large 1M window. The floor is
+# deliberately optimistic: when the window is entirely unknown a 1M session
+# must not be nagged early.
+WINDOW="$(cfg context_window)"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(kv window "$MODELFILE")"
+[[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW=1000000
+
 # Auto-correct upward from observed usage (unless the window is pinned in config):
 # a session that has already processed >200K tokens cannot be on a 200K window, so
-# a stale/unrecognized 200K guess for a large-context model self-heals here. This
-# is the safe direction — it only ever *raises* the window (lowers occupancy), so
-# it can't cause a premature reset; it just stops one.
+# a stale/unrecognized 200K guess for a large-context model self-heals here.
 if [ -z "$(cfg context_window)" ] && [ "$USED" -gt 200000 ] && [ "$WINDOW" -lt 1000000 ]; then
   WINDOW=1000000
 fi

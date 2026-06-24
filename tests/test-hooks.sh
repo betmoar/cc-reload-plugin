@@ -18,7 +18,7 @@ ck "injects additionalContext" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.
 ck "pending marker consumed" '[ ! -f "$TMP/.reload/pending" ]'
 # A visible systemMessage must accompany the (silent) additionalContext, else the
 # auto-reload looks like it never fired and users reach for a manual /reload.
-ck "emits a visible restored systemMessage" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"restored\")" >/dev/null'
+ck "emits a visible cc-reload systemMessage" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"cc-reload\")" >/dev/null'
 ck "systemMessage surfaces the digest intent" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"do thing\")" >/dev/null'
 
 echo "== SessionStart: not armed -> no-op =="
@@ -153,5 +153,25 @@ echo "== SessionStart: unrecognized model id -> assumes 1M window =="
 rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-future-9"}' >/dev/null
 ck "unknown id resolves to 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+echo "== model_window: Sonnet 4.x and Haiku 4.x map to 200K =="
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-6"}' >/dev/null
+ck "sonnet-4-6 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-haiku-4-5-20251001"}' >/dev/null
+ck "haiku-4-5 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+
+echo "== Stop hook: live model from transcript updates stale model stamp =="
+# Stamp Opus 1M, but transcript says sonnet-4-6 (200K). At 50k tokens that's 25% of 200K
+# which should trigger at 5% budget. With stale 1M stamp it would be 5% -> borderline.
+printf 'model: claude-opus-4-8[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf 'context_budget_pct: 5\n' > "$TMP/.reload/config"
+# Transcript with model field on assistant turn
+printf '{"message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "live model refreshes stamp to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
+ck "50k/200K=25% > 5% budget -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

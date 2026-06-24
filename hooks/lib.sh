@@ -60,6 +60,8 @@ model_window() {
     *"[1m]"*)   printf '1000000' ;;
     *sonnet-5*) printf '1000000' ;;   # Sonnet 5 ships with a 1M window
     *opus-4*)   printf '200000'  ;;   # non-[1m] Opus 4.x is genuinely 200K
+    *sonnet-4*) printf '200000'  ;;   # Sonnet 4.x is 200K
+    *haiku-4*)  printf '200000'  ;;   # Haiku 4.x is 200K
     *)          printf '1000000' ;;   # unrecognized id -> assume large (see stop-hook floor)
   esac
 }
