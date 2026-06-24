@@ -36,7 +36,19 @@ fi
 BODY="$(cat "$DIGEST")"
 rm -f "$PENDING"   # consume the arm
 
-jq -n --arg ctx "$BODY" --arg src "$SOURCE" '{
+# Visible confirmation. additionalContext is SILENT — Claude Code wraps it in a
+# system reminder the model reads on its next request, but the user sees nothing
+# and no turn is taken. Without a systemMessage the auto-reload looks like it
+# never fired (the symptom that sent users reaching for a manual /reload). The
+# top-level systemMessage IS shown, so surface a one-line sitrep — the digest's
+# `intent` — to confirm the restore. /reload still re-prints the full report.
+INTENT="$(awk -F'"' '/^intent:/{print $2; exit}' "$DIGEST" 2>/dev/null)"
+MSG="🔄 cc-reload restored this session from .reload/session.md (reset: ${SOURCE})."
+[ -n "$INTENT" ] && MSG="$MSG Intent: ${INTENT}"
+MSG="$MSG — context loaded; just continue, or run /reload for the full sitrep."
+
+jq -n --arg ctx "$BODY" --arg src "$SOURCE" --arg msg "$MSG" '{
+  systemMessage: $msg,
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: ("cc-reload restored this session from .reload/session.md (reset: " + $src + "). Resume from the \"Next concrete step\".\n\n" + $ctx)

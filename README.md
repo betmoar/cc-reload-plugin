@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.1.0 skeleton.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.1.3.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -68,6 +68,61 @@ not disclosed or configurable as a %, which is exactly why cc-reload drives the 
 Every hook's first actions: **fail open if `jq` is missing**, and **stand down if a cc-repete loop
 is active** (`.repete/loop.local.md` → `active: true`). See `hooks/lib.sh`.
 
+## Statusline (optional) — context % on the right
+
+Claude Code now hands the statusline a pre-calculated context signal on stdin
+(`context_window.used_percentage` + `context_window_size`, CC ≥ 2.1.132). cc-reload ships a tiny
+segment that turns it into a budget-aware gauge:
+
+```
+ctx[1M] 7%·45
+   │    │   └ this project's reload budget (% of window), from .reload/config (45 default)
+   │    └──── current occupancy (input + cache), colored GREEN/YELLOW/RED relative to the budget
+   └───────── context window size: 1M / 200k
+```
+
+It is **read-only** — it does not run the hooks or read the transcript, just renders what Claude
+Code already provides. It prints nothing early in a session or right after `/compact` (no signal
+yet), so the slot stays clean. With the budget disabled (`context_budget_pct: 0`) it drops the
+`·N` suffix and colors on absolute thresholds.
+
+Claude Code allows **one** `statusLine`, so to show this *alongside* another statusline plugin
+you compose them. `scripts/cc-statusline.sh` does exactly that: it runs
+[cc-proxy](https://github.com/betmoar/cc-proxy-plugin)'s statusline (located via `$PROXY_PATH`, so
+it auto-follows cc-proxy version bumps) and appends cc-reload's segment, joined with ` | `. Either
+side missing is fine — the bar degrades to whatever is present, with no dangling separator.
+
+Wire it in `~/.claude/settings.json` (top-level, **not** under `env`) with an **absolute** path —
+the statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "bash /ABS/PATH/TO/cc-reload/scripts/cc-statusline.sh"
+}
+```
+
+To show **only** cc-reload's context segment (no cc-proxy), point the command at
+`scripts/statusline.sh` instead. If you already have a `statusLine` you want to keep, the composer
+is the merge point — it does not overwrite, it wraps.
+
+Point it at the installed cache copy (stable across repo moves):
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "bash ~/.claude/plugins/cache/<owner>/cc-reload/<ver>/scripts/cc-statusline.sh"
+}
+```
+
+You **set the version number once**. When run from the cache, the composer re-execs the *newest*
+installed `cc-reload/*/scripts/cc-statusline.sh`, so the pinned path keeps tracking new installs —
+`settings.json` never needs touching again on a version bump. (A checkout *outside* the cache — your
+dev tree — is never redirected; it runs itself.)
+
+> Caveat: a machine/session where the referenced script path doesn't exist gets a blank bar — so
+> point the global `statusLine` at a path present on that machine.
+
 ## Coexistence with cc-repete
 
 | | cc-repete | cc-reload |
@@ -106,11 +161,12 @@ context_window: 1000000      # AUTHORITATIVE window override in tokens. Set this
 cc-reload/
 ├── .claude-plugin/plugin.json
 ├── hooks/{hooks.json, lib.sh, sessionstart-hook.sh, precompact-hook.sh, stop-hook.sh}
+├── scripts/{statusline.sh, cc-statusline.sh}   # optional statusline segment + composer
 ├── commands/{reload-budget.md, checkpoint.md, reload.md}
 ├── skills/maintaining-session-continuity/SKILL.md
 ├── templates/session.md
-├── tests/test-hooks.sh            # 33 hook smoke tests (run: bash tests/test-hooks.sh)
-├── .github/workflows/ci.yml       # bash -n + shellcheck + the test suite
+├── tests/{test-hooks.sh, test-statusline.sh}   # smoke tests (run: bash tests/test-*.sh)
+├── .github/workflows/ci.yml       # bash -n + shellcheck + the test suites
 └── LICENSE                        # MIT
 ```
 

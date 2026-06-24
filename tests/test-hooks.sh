@@ -16,6 +16,10 @@ touch "$TMP/.reload/pending"
 OUT="$(run sessionstart-hook.sh '{"session_id":"S1","source":"clear","hook_event_name":"SessionStart"}')"
 ck "injects additionalContext" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
 ck "pending marker consumed" '[ ! -f "$TMP/.reload/pending" ]'
+# A visible systemMessage must accompany the (silent) additionalContext, else the
+# auto-reload looks like it never fired and users reach for a manual /reload.
+ck "emits a visible restored systemMessage" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"restored\")" >/dev/null'
+ck "systemMessage surfaces the digest intent" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"do thing\")" >/dev/null'
 
 echo "== SessionStart: not armed -> no-op =="
 OUT="$(run sessionstart-hook.sh '{"session_id":"S1","source":"clear"}')"

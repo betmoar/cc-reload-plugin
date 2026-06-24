@@ -1,6 +1,6 @@
 {
   "name": "cc-reload",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Session continuity across context resets for Claude Code. Snapshots a session digest before /clear, /compact, or auto-compaction and auto-rehydrates it after. The non-looped companion to cc-repete — stands down whenever a cc-repete loop is active.",
   "author": {
     "name": "betmoar"
