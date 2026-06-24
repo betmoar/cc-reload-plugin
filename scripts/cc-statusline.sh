@@ -18,7 +18,7 @@
 # Self-relocation: when this copy lives in the versioned plugin cache
 # (.../cc-reload/<ver>/scripts), re-exec the composer from the NEWEST installed
 # cc-reload version. That makes a version-pinned settings.json path
-# (".../cc-reload/0.1.3/scripts/cc-statusline.sh") keep tracking new installs
+# (".../cc-reload/0.1.4/scripts/cc-statusline.sh") keep tracking new installs
 # without ever editing settings.json again. A checkout OUTSIDE the cache (your
 # dev tree) is left alone — you chose that path deliberately, so we never
 # redirect away from it.
