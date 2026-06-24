@@ -54,9 +54,13 @@ TRANSCRIPT="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""')"
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
 # Window: config override wins (set it for your main model), else the value
-# SessionStart stamped from the live model, else a 200K floor.
+# SessionStart stamped from the live model, else assume a large 1M window. The
+# floor is deliberately optimistic: when the window is entirely unknown (no
+# override, no stamp yet) a 1M session must not be nagged early, so we prefer a
+# late checkpoint over a false-early one. The >200K-used self-heal below still
+# rescues a stale *low* stamp.
 WINDOW="$(cfg context_window)"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(kv window "$MODELFILE")"
-[[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW=200000
+[[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW=1000000
 
 # Best-effort: last assistant turn's total input tokens from the transcript.
 USED="$(jq -rs '

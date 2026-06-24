@@ -137,4 +137,17 @@ ck "pass2 without digest does not arm" '[ ! -f "$TMP/.reload/pending" ]'
 ck "pass2 without digest clears summarizing" '[ ! -f "$TMP/.reload/summarizing" ]'
 ck "pass2 without digest warns clearly" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT armed\")" >/dev/null'
 
+echo "== Stop budget: window UNKNOWN (no override, no stamp) -> assume 1M, no false-early trigger =="
+rm -f "$TMP/.reload/model"                                   # no stamp
+printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"    # no context_window override
+mktx 150000   # OLD: 150k/200k = 75% -> false block ; NEW: 150k/1M = 15% -> quiet
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "unknown window assumes 1M -> 15% -> no trigger" '[ -z "$OUT" ]'
+
+echo "== SessionStart: unrecognized model id -> assumes 1M window =="
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-future-9"}' >/dev/null
+ck "unknown id resolves to 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

@@ -33,10 +33,13 @@ Claude Code gives hooks **no context-% signal and no model id on `Stop`**. cc-re
 and **auto-detects each user's window** — nothing is hardcoded to one setup:
 
 1. `SessionStart` reads the live `model` and stamps its window to `.reload/model` (per user, per
-   model).
+   model). An unrecognized id is assumed to be a large (1M) window.
 2. The `Stop` hook reads the **last assistant turn's input tokens** (input + cache) from the
-   transcript and computes occupancy against that window.
-3. If the window guess is too low for an unrecognized large-context model, it **self-corrects
+   transcript and computes occupancy against that window. If the window is entirely unknown (no
+   stamp yet, no override) it **assumes a large 1M window** — so a 1M session is never nagged
+   before the stamp exists; the trade-off is that a genuinely small un-stamped session checkpoints
+   late (PreCompact + auto-compaction still backstop it).
+3. If a *stamped* window is too low for an unrecognized large-context model, it **self-corrects
    upward from observed usage** (>200K tokens used ⇒ not a 200K window). This only ever lowers
    occupancy, so it can't cause a premature reset.
 4. `context_window` in `.reload/config` overrides everything — the precise fix for a brand-new
