@@ -25,11 +25,14 @@ echo "== SessionStart: not armed -> no-op =="
 OUT="$(run sessionstart-hook.sh '{"session_id":"S1","source":"clear"}')"
 ck "no output when unarmed" '[ -z "$OUT" ]'
 
-echo "== SessionStart: armed but foreign session_id -> defers (no inject, marker kept) =="
+echo "== SessionStart: /clear mints a NEW session id -> still injects + consumes (regression: id guard removed) =="
+# Real /clear mints a fresh session id every time, so the armed digest (stamped
+# with the PRIOR id) will never match the current one. The arm (.reload/pending),
+# not session identity, is the gate. A differing id must NOT suppress the banner.
 touch "$TMP/.reload/pending"
-OUT="$(run sessionstart-hook.sh '{"session_id":"OTHER","source":"clear"}')"
-ck "no inject for foreign session" '[ -z "$OUT" ]'
-ck "marker kept for owner" '[ -f "$TMP/.reload/pending" ]'
+OUT="$(run sessionstart-hook.sh '{"session_id":"NEW-CLEAR-ID","source":"clear"}')"
+ck "injects digest despite differing session id" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "consumes the one-shot marker" '[ ! -f "$TMP/.reload/pending" ]'
 rm -f "$TMP/.reload/pending"
 
 echo "== Stand-down: cc-repete loop active -> hooks no-op =="

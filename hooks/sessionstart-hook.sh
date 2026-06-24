@@ -20,18 +20,14 @@ if [ -n "$MODEL" ]; then
   printf 'model: %s\nwindow: %s\n' "$MODEL" "$(model_window "$MODEL")" > "$MODELFILE"
 fi
 
-# Only rehydrate when armed.
+# Only rehydrate when armed. The one-shot .reload/pending marker — written next to
+# the digest by THIS project's own Stop/PreCompact hook — is the sole gate. We do
+# NOT also gate on session id: /clear (and resume) mint a fresh session id every
+# time, so the armed digest is always stamped with the PRIOR id and an id-equality
+# check would suppress the banner on its primary trigger 100% of the time. The arm
+# is self-scoping (per-project dir, consumed on use), so identity adds nothing.
 [ -f "$PENDING" ] || exit 0
 [ -f "$DIGEST" ]  || { rm -f "$PENDING"; exit 0; }
-
-# Optional session-id guard (M3): /clear and /compact preserve the session id,
-# so a digest stamped with a different id is likely stale from another session.
-HOOK_SESSION="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""')"
-DIGEST_SESSION="$(awk -F'"' '/^session_id:/{print $2; exit}' "$DIGEST" 2>/dev/null)"
-if [ -n "$DIGEST_SESSION" ] && [ -n "$HOOK_SESSION" ] && [ "$DIGEST_SESSION" != "$HOOK_SESSION" ]; then
-  # don't inject another session's digest; leave it armed for its owner
-  exit 0
-fi
 
 BODY="$(cat "$DIGEST")"
 rm -f "$PENDING"   # consume the arm
