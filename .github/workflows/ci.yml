@@ -22,12 +22,14 @@ jobs:
           jq -e . .claude-plugin/plugin.json > /dev/null
           jq -e . hooks/hooks.json > /dev/null
 
-      - name: Syntax check hooks
+      - name: Syntax check shell
         run: |
-          for f in hooks/*.sh; do bash -n "$f"; done
+          for f in hooks/*.sh scripts/*.sh; do bash -n "$f"; done
 
-      - name: Shellcheck hooks
-        run: shellcheck -S warning hooks/*.sh
+      - name: Shellcheck
+        run: shellcheck -S warning hooks/*.sh scripts/*.sh
 
-      - name: Hook smoke tests
-        run: bash tests/test-hooks.sh
+      - name: Smoke tests
+        run: |
+          bash tests/test-hooks.sh
+          bash tests/test-statusline.sh

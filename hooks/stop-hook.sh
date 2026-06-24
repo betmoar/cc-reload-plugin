@@ -32,7 +32,7 @@ if [ -f "$SUMMARIZING" ]; then
   rm -f "$SUMMARIZING"
   if [ -f "$DIGEST" ]; then
     touch "$PENDING"
-    jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically." \
+    jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically (you'll see a '🔄 restored' line; run /reload for the full sitrep)." \
       '{systemMessage:$m}'
   else
     # The checkpoint turn ended with no digest on disk (never written, or deleted
