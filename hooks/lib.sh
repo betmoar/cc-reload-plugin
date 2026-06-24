@@ -48,7 +48,9 @@ kv() {
 cfg() { kv "$1" "$CONFIG"; }
 
 # Resolve a model id to its context window in tokens. The "[1m]" suffix and the
-# 1M-context tiers (e.g. Sonnet 5) select the 1M window; otherwise 200K. This is
+# 1M-context tiers (e.g. Sonnet 5) select the 1M window; non-"[1m]" Opus 4.x is a
+# genuine 200K window; any unrecognized id assumes a large 1M window (optimistic —
+# better to checkpoint a small session late than nag a large one early). This is
 # a heuristic over model-id strings — `context_window` in .reload/config always
 # wins (set it for your main model so a new/unrecognized id can't misconfigure
 # the budget). Most 200K ids now belong to subagents; the budget targets the
@@ -57,7 +59,7 @@ model_window() {
   case "$1" in
     *"[1m]"*)   printf '1000000' ;;
     *sonnet-5*) printf '1000000' ;;   # Sonnet 5 ships with a 1M window
-    *opus-4*)   printf '200000'  ;;
-    *)          printf '200000'  ;;
+    *opus-4*)   printf '200000'  ;;   # non-[1m] Opus 4.x is genuinely 200K
+    *)          printf '1000000' ;;   # unrecognized id -> assume large (see stop-hook floor)
   esac
 }
