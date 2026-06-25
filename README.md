@@ -108,22 +108,28 @@ To show **only** cc-reload's context segment (no cc-proxy), point the command at
 `scripts/statusline.sh` instead. If you already have a `statusLine` you want to keep, the composer
 is the merge point — it does not overwrite, it wraps.
 
-Point it at the installed cache copy (stable across repo moves):
+Point it at the installed cache copy **without pinning a version** — resolve the newest install at
+runtime, so a version bump (or a cache prune of the old version) never breaks the bar:
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "bash ~/.claude/plugins/cache/<owner>/cc-reload/<ver>/scripts/cc-statusline.sh"
+  "command": "bash -c 'f=$(ls -d \"$HOME\"/.claude/plugins/cache/*/cc-reload/*/scripts/cc-statusline.sh 2>/dev/null | sort -V | tail -1); [ -n \"$f\" ] && exec bash \"$f\"; exit 0'"
 }
 ```
 
-You **set the version number once**. When run from the cache, the composer re-execs the *newest*
-installed `cc-reload/*/scripts/cc-statusline.sh`, so the pinned path keeps tracking new installs —
-`settings.json` never needs touching again on a version bump. (A checkout *outside* the cache — your
-dev tree — is never redirected; it runs itself.)
+This globs every installed `cc-reload`, picks the highest version, and `exec`s it (the session JSON
+on stdin passes straight through). There is **no version in the path**, so nothing needs editing on
+an upgrade, and an old version disappearing from the cache can't strand the path. If no install is
+found it prints nothing and exits 0 (clean empty slot).
 
-> Caveat: a machine/session where the referenced script path doesn't exist gets a blank bar — so
-> point the global `statusLine` at a path present on that machine.
+> Prefer an explicit path? You still can — but a version-pinned cache path
+> (`…/cc-reload/0.1.6/scripts/cc-statusline.sh`) keeps working only while **that** version stays
+> installed; once it's pruned the slot goes blank. (When run from inside the versioned cache the
+> composer self-relocates to the newest installed copy, so a still-present pin tracks upgrades.) An
+> absolute path to a fixed clone of this repo is itself version-agnostic — `git pull` updates it in
+> place. Either way, point `statusLine` at a path that exists on that machine, or the slot renders
+> blank.
 
 ## Coexistence with cc-repete
 
