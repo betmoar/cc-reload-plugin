@@ -80,8 +80,8 @@ fi
 # stamped from the live model, else assume a large 1M window. The floor is
 # deliberately optimistic: when the window is entirely unknown a 1M session
 # must not be nagged early.
-WINDOW="$(cfg context_window)"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(kv window "$MODELFILE")"
-[[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW=1000000
+WINDOW="$(cfg context_window)"; { [[ "$WINDOW" =~ ^[0-9]+$ ]] && [ "$WINDOW" -gt 0 ]; } || WINDOW="$(kv window "$MODELFILE")"
+{ [[ "$WINDOW" =~ ^[0-9]+$ ]] && [ "$WINDOW" -gt 0 ]; } || WINDOW=1000000
 
 # Auto-correct upward from observed usage (unless the window is pinned in config):
 # a session that has already processed >200K tokens cannot be on a 200K window, so

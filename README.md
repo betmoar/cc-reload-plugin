@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.1.5.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.1.6.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -32,13 +32,15 @@ the two never fight.
 Claude Code gives hooks **no context-% signal and no model id on `Stop`**. cc-reload bridges this
 and **auto-detects each user's window** — nothing is hardcoded to one setup:
 
-1. `SessionStart` reads the live `model` and stamps its window to `.reload/model` (per user, per
-   model). An unrecognized id is assumed to be a large (1M) window.
-2. The `Stop` hook reads the **last assistant turn's input tokens** (input + cache) from the
-   transcript and computes occupancy against that window. If the window is entirely unknown (no
-   stamp yet, no override) it **assumes a large 1M window** — so a 1M session is never nagged
-   before the stamp exists; the trade-off is that a genuinely small un-stamped session checkpoints
-   late (PreCompact + auto-compaction still backstop it).
+1. `SessionStart` stamps the live `model` + resolved window to `.reload/model` when Claude Code
+   supplies a model id (an **optional** SessionStart field — best-effort). An unrecognized id is
+   assumed to be a large (1M) window.
+2. The `Stop` hook gets **no model id**, so it reads the model from the **last assistant turn** in
+   the transcript and re-stamps `.reload/model` if it changed (mid-session `/model` switches are
+   picked up). It then reads that turn's input tokens (input + cache) and computes occupancy against
+   the window. If the window is entirely unknown (no stamp yet, no override) it **assumes a large 1M
+   window** — so a 1M session is never nagged before the stamp exists; the trade-off is that a
+   genuinely small un-stamped session checkpoints late (PreCompact + auto-compaction still backstop it).
 3. If a *stamped* window is too low for an unrecognized large-context model, it **self-corrects
    upward from observed usage** (>200K tokens used ⇒ not a 200K window). This only ever lowers
    occupancy, so it can't cause a premature reset.

@@ -51,7 +51,7 @@ ck "fallback digest created" '[ -f "$TMP/.reload/session.md" ]'
 ck "self-ignoring .gitignore dropped" '[ -f "$TMP/.reload/.gitignore" ]'
 ck ".gitignore contents are a lone *" '[ "$(cat "$TMP/.reload/.gitignore")" = "*" ]'
 
-echo "== PreCompact: fallback digest stamps the session id (staleness guard works) =="
+echo "== PreCompact: fallback digest records the session id in its frontmatter =="
 rm -f "$TMP/.reload/pending" "$TMP/.reload/session.md"
 run precompact-hook.sh '{"session_id":"S9","trigger":"auto","hook_event_name":"PreCompact"}' >/dev/null
 ck "fallback stamped with session id" 'grep -q "session_id: \"S9\"" "$TMP/.reload/session.md"'
@@ -128,6 +128,17 @@ mktx 300000   # pinned 200k -> 150% -> must trigger despite usage>200k
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "override pins window -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
+
+echo "== Stop budget: context_window: 0 (invalid) -> no crash, falls back to a safe window =="
+# A literal 0 window would be a division-by-zero in the occupancy math. It must be
+# treated as invalid and fall back (no stamp here -> 1M), so 100k -> 10% -> no trigger.
+rm -f "$TMP/.reload/model"
+printf 'context_budget_pct: 45\ncontext_window: 0\n' > "$TMP/.reload/config"
+mktx 100000
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "context_window:0 does not crash or trigger" '[ -z "$OUT" ]'
+ck "context_window:0 leaves no stranded summarizing marker" '[ ! -f "$TMP/.reload/summarizing" ]'
 
 echo "== Stop budget: usage field absent -> byte-estimate fallback =="
 printf 'context_budget_pct: 45\ncontext_window: 200000\n' > "$TMP/.reload/config"
