@@ -76,17 +76,21 @@ if [ -n "$LIVE_MODEL" ]; then
   fi
 fi
 
-# Window: config override wins (set it for your main model), else the value
-# stamped from the live model, else assume a large 1M window. The floor is
-# deliberately optimistic: when the window is entirely unknown a 1M session
-# must not be nagged early.
-WINDOW="$(cfg context_window)"; { [[ "$WINDOW" =~ ^[0-9]+$ ]] && [ "$WINDOW" -gt 0 ]; } || WINDOW="$(kv window "$MODELFILE")"
+# Window: a VALID positive context_window override wins (set it for your main
+# model); else the value stamped from the live model; else assume a large 1M
+# window. The floor is deliberately optimistic: an entirely-unknown window must
+# not nag a 1M session early. Validate the override ONCE (CW): a non-positive or
+# garbage value is treated as absent — so it can't divide by zero below, and (key
+# for the self-heal) it isn't mistaken for a real pin.
+CW="$(cfg context_window)"; { [[ "$CW" =~ ^[0-9]+$ ]] && [ "$CW" -gt 0 ]; } || CW=""
+WINDOW="$CW"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(kv window "$MODELFILE")"
 { [[ "$WINDOW" =~ ^[0-9]+$ ]] && [ "$WINDOW" -gt 0 ]; } || WINDOW=1000000
 
-# Auto-correct upward from observed usage (unless the window is pinned in config):
-# a session that has already processed >200K tokens cannot be on a 200K window, so
-# a stale/unrecognized 200K guess for a large-context model self-heals here.
-if [ -z "$(cfg context_window)" ] && [ "$USED" -gt 200000 ] && [ "$WINDOW" -lt 1000000 ]; then
+# Auto-correct upward from observed usage (unless a VALID window is pinned): a
+# session that has already processed >200K tokens cannot be on a 200K window, so
+# a stale/unrecognized 200K guess for a large-context model self-heals here. Keyed
+# on the validated CW so an invalid override (e.g. 0) doesn't disable this.
+if [ -z "$CW" ] && [ "$USED" -gt 200000 ] && [ "$WINDOW" -lt 1000000 ]; then
   WINDOW=1000000
 fi
 

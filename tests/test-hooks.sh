@@ -132,13 +132,27 @@ ck "override pins window -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"
 echo "== Stop budget: context_window: 0 (invalid) -> no crash, falls back to a safe window =="
 # A literal 0 window would be a division-by-zero in the occupancy math. It must be
 # treated as invalid and fall back (no stamp here -> 1M), so 100k -> 10% -> no trigger.
+# Capture stderr to a file: the div-by-zero regression prints to stderr while leaving
+# stdout empty, so asserting empty stdout alone would NOT catch it — assert clean stderr.
 rm -f "$TMP/.reload/model"
 printf 'context_budget_pct: 45\ncontext_window: 0\n' > "$TMP/.reload/config"
 mktx 100000
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
-OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
-ck "context_window:0 does not crash or trigger" '[ -z "$OUT" ]'
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "context_window:0 does not trigger" '[ -z "$OUT" ]'
+ck "context_window:0 emits no stderr (no division-by-zero)" '[ ! -s "$TMP/err.txt" ]'
 ck "context_window:0 leaves no stranded summarizing marker" '[ ! -f "$TMP/.reload/summarizing" ]'
+
+echo "== Stop budget: invalid context_window: 0 does not disable the >200K self-heal =="
+# An invalid override must be treated as 'no pin'. With a 200K stamp and >200K usage,
+# the window self-heals to 1M (30%) and must NOT trigger. The bug left it at 200K
+# (150% -> block) because cfg returned a non-empty "0" and gated out the self-heal.
+printf 'model: claude-haiku-4-5\nwindow: 200000\n' > "$TMP/.reload/model"
+printf 'context_budget_pct: 45\ncontext_window: 0\n' > "$TMP/.reload/config"
+mktx 300000
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "invalid override still self-heals the 200K stamp -> no trigger" '[ -z "$OUT" ]'
 
 echo "== Stop budget: usage field absent -> byte-estimate fallback =="
 printf 'context_budget_pct: 45\ncontext_window: 200000\n' > "$TMP/.reload/config"
@@ -181,6 +195,17 @@ ck "older opus-4-1 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.rel
 rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-haiku-4-5-20251001"}' >/dev/null
 ck "haiku-4-5 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+# boundary-anchored matching: a dated snapshot of an older tier still resolves 200K,
+# but a future higher minor (4-10) must NOT collide with the 4-1 substring -> 1M.
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-opus-4-1-20250805"}' >/dev/null
+ck "dated opus-4-1 snapshot still resolves 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-opus-4-10"}' >/dev/null
+ck "future opus-4-10 does NOT match opus-4-1 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-50"}' >/dev/null
+ck "future sonnet-4-50 does NOT match sonnet-4-5 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
 echo "== Stop hook: live model from transcript updates stale model stamp =="
 # Stamp Opus 1M, but transcript says haiku-4-5 (200K). At 50k tokens that's 25% of 200K
