@@ -10,10 +10,11 @@
 source "$(dirname "$0")/lib.sh"
 repete_active && exit 0
 
-# Read the session id so a mechanical fallback digest can be stamped with it.
-# /compact (and auto-compaction) preserve the session id, so stamping it lets the
-# SessionStart staleness guard rehydrate this digest in THIS session and refuse to
-# inject it into any other one (an empty id would match every session).
+# Read the session id so the mechanical fallback digest can record it in its
+# frontmatter (matching the template and agent-authored digests) — traceability
+# only. SessionStart gates rehydration on the .reload/pending arm alone; the
+# session-id staleness guard was removed in v0.1.5 (real /clear mints a fresh id
+# every time, so an id-equality check suppressed the banner on its main trigger).
 HOOK_INPUT="$(cat)"
 SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""')"
 

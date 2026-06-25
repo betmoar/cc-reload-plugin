@@ -47,21 +47,30 @@ kv() {
 }
 cfg() { kv "$1" "$CONFIG"; }
 
-# Resolve a model id to its context window in tokens. The "[1m]" suffix and the
-# 1M-context tiers (e.g. Sonnet 5) select the 1M window; non-"[1m]" Opus 4.x is a
-# genuine 200K window; any unrecognized id assumes a large 1M window (optimistic —
-# better to checkpoint a small session late than nag a large one early). This is
-# a heuristic over model-id strings — `context_window` in .reload/config always
-# wins (set it for your main model so a new/unrecognized id can't misconfigure
-# the budget). Most 200K ids now belong to subagents; the budget targets the
-# main session's window.
+# Resolve a model id to its context window in tokens. Current-generation
+# main-session models — Opus 4.6/4.7/4.8, Sonnet 4.6, the 5-series (Fable/Mythos/
+# Sonnet 5/Opus 5), and any "[1m]" id — ship a 1M window at standard pricing.
+# Haiku is a genuine 200K tier, as were the OLDER non-"[1m]" Opus/Sonnet (4.0/4.1/
+# 4.5 and Sonnet 4.0/4.5, which offered 1M only behind the "[1m]" beta). Any
+# unrecognized id assumes a large 1M window (optimistic — better to checkpoint a
+# small session late than nag a large one early). This is a heuristic over
+# model-id strings — `context_window` in .reload/config always wins (set it for
+# your main model so a new/unrecognized id can't misconfigure the budget). Most
+# 200K ids now belong to subagents; the budget targets the main session's window.
 model_window() {
+  # Minor-version matches are boundary-anchored: an id ends at the minor (e.g.
+  # claude-opus-4-8) or continues with a "-<date>" snapshot suffix (e.g.
+  # claude-haiku-4-5-20251001). A bare *opus-4-1* substring would ALSO match a
+  # future claude-opus-4-10 and misclassify it 200K, so anchor on end-of-id (no
+  # trailing glob) or a literal "-". The "[1m]" beta form is handled first, above.
   case "$1" in
-    *"[1m]"*)   printf '1000000' ;;
-    *sonnet-5*) printf '1000000' ;;   # Sonnet 5 ships with a 1M window
-    *opus-4*)   printf '200000'  ;;   # non-[1m] Opus 4.x is genuinely 200K
-    *sonnet-4*) printf '200000'  ;;   # Sonnet 4.x is 200K
-    *haiku-4*)  printf '200000'  ;;   # Haiku 4.x is 200K
-    *)          printf '1000000' ;;   # unrecognized id -> assume large (see stop-hook floor)
+    *"[1m]"*)                                        printf '1000000' ;;   # explicit 1M beta suffix
+    *opus-4-6|*opus-4-6-*|*opus-4-7|*opus-4-7-*|*opus-4-8|*opus-4-8-*) printf '1000000' ;;   # current Opus: 1M at standard pricing
+    *sonnet-4-6|*sonnet-4-6-*)                       printf '1000000' ;;   # Sonnet 4.6: 1M
+    *fable-5*|*mythos-5*|*sonnet-5*|*opus-5*)        printf '1000000' ;;   # 5-series tiers: 1M
+    *opus-4-0|*opus-4-0-*|*opus-4-1|*opus-4-1-*|*opus-4-5|*opus-4-5-*) printf '200000' ;;   # older non-[1m] Opus: genuine 200K
+    *sonnet-4-0|*sonnet-4-0-*|*sonnet-4-5|*sonnet-4-5-*) printf '200000' ;;   # older non-[1m] Sonnet: genuine 200K
+    *haiku*)                                         printf '200000'  ;;   # Haiku tiers: 200K (no minor split)
+    *)                                               printf '1000000' ;;   # unrecognized id -> assume large (see stop-hook floor)
   esac
 }

@@ -51,7 +51,7 @@ ck "fallback digest created" '[ -f "$TMP/.reload/session.md" ]'
 ck "self-ignoring .gitignore dropped" '[ -f "$TMP/.reload/.gitignore" ]'
 ck ".gitignore contents are a lone *" '[ "$(cat "$TMP/.reload/.gitignore")" = "*" ]'
 
-echo "== PreCompact: fallback digest stamps the session id (staleness guard works) =="
+echo "== PreCompact: fallback digest records the session id in its frontmatter =="
 rm -f "$TMP/.reload/pending" "$TMP/.reload/session.md"
 run precompact-hook.sh '{"session_id":"S9","trigger":"auto","hook_event_name":"PreCompact"}' >/dev/null
 ck "fallback stamped with session id" 'grep -q "session_id: \"S9\"" "$TMP/.reload/session.md"'
@@ -129,6 +129,31 @@ rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "override pins window -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
 
+echo "== Stop budget: context_window: 0 (invalid) -> no crash, falls back to a safe window =="
+# A literal 0 window would be a division-by-zero in the occupancy math. It must be
+# treated as invalid and fall back (no stamp here -> 1M), so 100k -> 10% -> no trigger.
+# Capture stderr to a file: the div-by-zero regression prints to stderr while leaving
+# stdout empty, so asserting empty stdout alone would NOT catch it — assert clean stderr.
+rm -f "$TMP/.reload/model"
+printf 'context_budget_pct: 45\ncontext_window: 0\n' > "$TMP/.reload/config"
+mktx 100000
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "context_window:0 does not trigger" '[ -z "$OUT" ]'
+ck "context_window:0 emits no stderr (no division-by-zero)" '[ ! -s "$TMP/err.txt" ]'
+ck "context_window:0 leaves no stranded summarizing marker" '[ ! -f "$TMP/.reload/summarizing" ]'
+
+echo "== Stop budget: invalid context_window: 0 does not disable the >200K self-heal =="
+# An invalid override must be treated as 'no pin'. With a 200K stamp and >200K usage,
+# the window self-heals to 1M (30%) and must NOT trigger. The bug left it at 200K
+# (150% -> block) because cfg returned a non-empty "0" and gated out the self-heal.
+printf 'model: claude-haiku-4-5\nwindow: 200000\n' > "$TMP/.reload/model"
+printf 'context_budget_pct: 45\ncontext_window: 0\n' > "$TMP/.reload/config"
+mktx 300000
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "invalid override still self-heals the 200K stamp -> no trigger" '[ -z "$OUT" ]'
+
 echo "== Stop budget: usage field absent -> byte-estimate fallback =="
 printf 'context_budget_pct: 45\ncontext_window: 200000\n' > "$TMP/.reload/config"
 head -c 120000 /dev/zero | tr '\0' 'x' > "$TMP/t.jsonl"   # ~30k tokens = 15% of 200k -> no trigger
@@ -157,21 +182,38 @@ rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-future-9"}' >/dev/null
 ck "unknown id resolves to 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
-echo "== model_window: Sonnet 4.x and Haiku 4.x map to 200K =="
+echo "== model_window: current Opus/Sonnet are 1M; older tiers + Haiku are 200K =="
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-opus-4-8"}' >/dev/null
+ck "opus-4-8 resolves to 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-6"}' >/dev/null
-ck "sonnet-4-6 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+ck "sonnet-4-6 resolves to 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-opus-4-1"}' >/dev/null
+ck "older opus-4-1 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
 rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-haiku-4-5-20251001"}' >/dev/null
 ck "haiku-4-5 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+# boundary-anchored matching: a dated snapshot of an older tier still resolves 200K,
+# but a future higher minor (4-10) must NOT collide with the 4-1 substring -> 1M.
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-opus-4-1-20250805"}' >/dev/null
+ck "dated opus-4-1 snapshot still resolves 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-opus-4-10"}' >/dev/null
+ck "future opus-4-10 does NOT match opus-4-1 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-50"}' >/dev/null
+ck "future sonnet-4-50 does NOT match sonnet-4-5 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
 echo "== Stop hook: live model from transcript updates stale model stamp =="
-# Stamp Opus 1M, but transcript says sonnet-4-6 (200K). At 50k tokens that's 25% of 200K
-# which should trigger at 5% budget. With stale 1M stamp it would be 5% -> borderline.
+# Stamp Opus 1M, but transcript says haiku-4-5 (200K). At 50k tokens that's 25% of 200K
+# which should trigger at 5% budget. With the stale 1M stamp it would be 5% -> borderline.
 printf 'model: claude-opus-4-8[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
 printf 'context_budget_pct: 5\n' > "$TMP/.reload/config"
 # Transcript with model field on assistant turn
-printf '{"message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+printf '{"message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "live model refreshes stamp to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
