@@ -1,0 +1,1 @@
+{ "name": "cc-reload", "render": "scripts/statusline.sh", "order": 20 }
