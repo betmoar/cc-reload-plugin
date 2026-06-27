@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cc-reload statusline segment + composer smoke tests. Run: bash tests/test-statusline.sh
+# cc-reload statusline segment smoke tests. Run: bash tests/test-statusline.sh
 set -uo pipefail
 S="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -59,52 +59,5 @@ OUT="$(seg '')"; ck "empty stdin no crash" '[ -z "$OUT" ]'
 echo "== segment: window size absent -> bare ctx (no tag) but still % =="
 OUT="$(plain "$(seg '{"context_window":{"used_percentage":8}}')")"
 ck "bare ctx N%·45 when size absent" '[ "$OUT" = "ctx 8%·45" ]'
-
-echo "== composer: appends cc-reload segment after a stub proxy renderer =="
-# Stub the proxy statusline: a node script that echoes a fixed proxy string.
-STUB="$TMP/proxy/scripts"; mkdir -p "$STUB"
-printf 'process.stdout.write("claude 5h:12%%")\n' > "$STUB/statusline.js"
-JSON='{"context_window":{"used_percentage":7,"context_window_size":1000000},"workspace":{"project_dir":"/tmp"}}'
-OUT="$(plain "$(PROXY_PATH="$TMP/proxy/bin/cc-proxy.js" bash -c 'cat | bash '"$S"'/cc-statusline.sh' <<<"$JSON")")"
-ck "joins proxy | reload" '[ "$OUT" = "claude 5h:12% | ctx[1M] 7%·45" ]'
-
-echo "== composer: proxy present but reload empty -> proxy only, no trailing sep =="
-OUT="$(PROXY_PATH="$TMP/proxy/bin/cc-proxy.js" bash -c 'cat | bash '"$S"'/cc-statusline.sh' <<<'{}')"
-OUT="$(plain "$OUT")"
-ck "proxy only, no dangling ' | '" '[ "$OUT" = "claude 5h:12%" ]'
-
-echo "== composer: proxy absent -> reload segment only, clean =="
-# Redirect HOME so the cache glob finds no cc-proxy, and give a bogus PROXY_PATH.
-EMPTYHOME="$TMP/emptyhome"; mkdir -p "$EMPTYHOME/.claude/plugins/cache"
-OUT="$(HOME="$EMPTYHOME" PROXY_PATH="/no/such/bin/cc-proxy.js" bash -c 'cat | bash '"$S"'/cc-statusline.sh' <<<"$JSON")"
-OUT="$(plain "$OUT")"
-ck "reload only when proxy missing" '[ "$OUT" = "ctx[1M] 7%·45" ]'
-
-echo "== composer: both empty -> empty string, exit 0 =="
-OUT="$(HOME="$EMPTYHOME" PROXY_PATH="/no/such.js" bash -c 'cat | bash '"$S"'/cc-statusline.sh' <<<'{}')"
-ck "both empty -> empty" '[ -z "$OUT" ]'
-
-# --- version-agnostic self-relocation (cache only) ---------------------------
-# A composer copy living in .../cc-reload/<ver>/scripts re-execs the NEWEST
-# installed version, so a version-pinned settings.json path keeps tracking new
-# installs. A copy outside the cache (the dev checkout) must NOT redirect.
-echo "== composer: cache copy re-execs the newest installed version =="
-OWNER="$TMP/.claude/plugins/cache/betmoar"
-mkdir -p "$OWNER/cc-reload/0.0.1/scripts" "$OWNER/cc-reload/9.9.9/scripts"
-cp "$S/cc-statusline.sh" "$OWNER/cc-reload/0.0.1/scripts/cc-statusline.sh"   # the OLD copy under test
-printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf NEWEST\n' > "$OWNER/cc-reload/9.9.9/scripts/cc-statusline.sh"
-OUT="$(printf '{}' | bash "$OWNER/cc-reload/0.0.1/scripts/cc-statusline.sh")"
-ck "old cache copy hands off to newest" '[ "$OUT" = "NEWEST" ]'
-
-echo "== composer: newest cache copy runs in place (no exec loop) =="
-cp "$S/cc-statusline.sh" "$OWNER/cc-reload/9.9.9/scripts/cc-statusline.sh"  # real composer is now newest
-cp "$S/statusline.sh"    "$OWNER/cc-reload/9.9.9/scripts/statusline.sh"
-JSON='{"context_window":{"used_percentage":5,"context_window_size":1000000},"workspace":{"project_dir":"/tmp"}}'
-OUT="$(plain "$(HOME="$EMPTYHOME" PROXY_PATH=/no/such.js bash "$OWNER/cc-reload/9.9.9/scripts/cc-statusline.sh" <<<"$JSON")")"
-ck "newest cache copy renders, no loop" '[ "$OUT" = "ctx[1M] 5%·45" ]'
-
-echo "== composer: dev checkout (outside cache) never redirects =="
-OUT="$(plain "$(HOME="$EMPTYHOME" PROXY_PATH=/no/such.js bash "$S/cc-statusline.sh" <<<"$JSON")")"
-ck "dev checkout runs itself" '[ "$OUT" = "ctx[1M] 5%·45" ]'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

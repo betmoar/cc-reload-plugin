@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.1.6.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.1.7.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -88,48 +88,29 @@ Code already provides. It prints nothing early in a session or right after `/com
 yet), so the slot stays clean. With the budget disabled (`context_budget_pct: 0`) it drops the
 `·N` suffix and colors on absolute thresholds.
 
-Claude Code allows **one** `statusLine`, so to show this *alongside* another statusline plugin
-you compose them. `scripts/cc-statusline.sh` does exactly that: it runs
-[cc-proxy](https://github.com/betmoar/cc-proxy-plugin)'s statusline (located via `$PROXY_PATH`, so
-it auto-follows cc-proxy version bumps) and appends cc-reload's segment, joined with ` | `. Either
-side missing is fine — the bar degrades to whatever is present, with no dangling separator.
-
-Wire it in `~/.claude/settings.json` (top-level, **not** under `env`) with an **absolute** path —
-the statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable:
+`scripts/statusline.sh` is a native Claude Code statusline renderer — point `statusLine` straight at
+it to show cc-reload's context gauge on its own bar. Use an **absolute** path (the command runs
+outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable):
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "bash /ABS/PATH/TO/cc-reload/scripts/cc-statusline.sh"
+  "command": "bash /ABS/PATH/TO/cc-reload/scripts/statusline.sh"
 }
 ```
 
-To show **only** cc-reload's context segment (no cc-proxy), point the command at
-`scripts/statusline.sh` instead. If you already have a `statusLine` you want to keep, the composer
-is the merge point — it does not overwrite, it wraps.
-
-Point it at the installed cache copy **without pinning a version** — resolve the newest install at
-runtime, so a version bump (or a cache prune of the old version) never breaks the bar:
+Claude Code allows only **one** `statusLine`, so to show this alongside other segments you need a
+composer in that slot. cc-reload doesn't ship one; it ships the segment manifest
+(`.claude-plugin/statusline.json`) that a composer can read:
 
 ```json
-"statusLine": {
-  "type": "command",
-  "command": "bash -c 'f=$(ls -d \"$HOME\"/.claude/plugins/cache/*/cc-reload/*/scripts/cc-statusline.sh 2>/dev/null | sort -V | tail -1); [ -n \"$f\" ] && exec bash \"$f\"; exit 0'"
-}
+{ "name": "cc-reload", "render": "scripts/statusline.sh", "order": 20 }
 ```
 
-This globs every installed `cc-reload`, picks the highest version, and `exec`s it (the session JSON
-on stdin passes straight through). There is **no version in the path**, so nothing needs editing on
-an upgrade, and an old version disappearing from the cache can't strand the path. If no install is
-found it prints nothing and exits 0 (clean empty slot).
-
-> Prefer an explicit path? You still can — but a version-pinned cache path
-> (`…/cc-reload/0.1.6/scripts/cc-statusline.sh`) keeps working only while **that** version stays
-> installed; once it's pruned the slot goes blank. (When run from inside the versioned cache the
-> composer self-relocates to the newest installed copy, so a still-present pin tracks upgrades.) An
-> absolute path to a fixed clone of this repo is itself version-agnostic — `git pull` updates it in
-> place. Either way, point `statusLine` at a path that exists on that machine, or the slot renders
-> blank.
+A composer discovers every installed plugin that ships such a manifest, fans the session JSON to
+each renderer, and joins the non-empty output — so cc-reload's gauge sits next to other plugins'
+segments with no per-plugin wiring, and an empty/errored segment drops out with no dangling
+separator.
 
 ## Coexistence with cc-repete
 
@@ -169,7 +150,8 @@ context_window: 1000000      # AUTHORITATIVE window override in tokens. Set this
 cc-reload/
 ├── .claude-plugin/plugin.json
 ├── hooks/{hooks.json, lib.sh, sessionstart-hook.sh, precompact-hook.sh, stop-hook.sh}
-├── scripts/{statusline.sh, cc-statusline.sh}   # optional statusline segment + composer
+├── .claude-plugin/statusline.json    # statusline segment manifest (for a composer)
+├── scripts/statusline.sh             # statusline segment renderer (native or via composer)
 ├── commands/{reload-budget.md, checkpoint.md, reload.md}
 ├── skills/maintaining-session-continuity/SKILL.md
 ├── templates/session.md
