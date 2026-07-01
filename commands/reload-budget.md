@@ -12,13 +12,13 @@ more work per session.
 
 Requested value: **$ARGUMENTS**
 
-1. Parse `$ARGUMENTS`:
-   - a number `1`–`95` → that's the new `context_budget_pct`.
-   - `off` or `0` → disable the proactive path (`context_budget_pct: 0`).
-   - empty/invalid → just report the current setting (read `.reload/config`, default 45) and stop.
-2. Write the value to `.reload/config` (create the file/dir if needed; if `.reload/.gitignore` is
-   missing, write it with a single line `*` so this state is never committed), setting the
-   `context_budget_pct:` line — preserve any other keys already there.
+1. If `$ARGUMENTS` is empty, report the current setting and stop:
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/reload-config.sh" get context_budget_pct` (empty output
+   means unset → default 45).
+2. Otherwise read the old value (same `get`), then set the new one — do NOT hand-edit the file;
+   the script validates the value, preserves other keys, and creates `.reload/` safely:
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/reload-config.sh" set context_budget_pct $ARGUMENTS`
+   (accepts `0`–`95` or `off`). If it exits non-zero, relay its stderr message verbatim and stop.
 3. Confirm in one line, e.g. "Reload budget → 30% of context window (was 45%). I'll prompt a
    checkpoint + /clear when context crosses ~30%."
 

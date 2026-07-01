@@ -29,11 +29,22 @@ HOOK_INPUT="$(cat)"
 # un-armed. This is the one path that truly always completes.
 if [ -f "$SUMMARIZING" ]; then
   ensure_reload_dir
+  # Freshness check BEFORE consuming the marker: the digest is "fresh" only if
+  # it was (re)written after pass 1 set the marker. A checkpoint turn that never
+  # touched session.md must not be reported as "digest saved" — but an existing
+  # stale digest is still armed (same floor PreCompact provides), just honestly.
+  FRESH=""
+  [ -f "$DIGEST" ] && [ "$DIGEST" -nt "$SUMMARIZING" ] && FRESH=1
   rm -f "$SUMMARIZING"
   if [ -f "$DIGEST" ]; then
     touch "$PENDING"
-    jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically (you'll see a '🔄 restored' line; run /reload for the full sitrep)." \
-      '{systemMessage:$m}'
+    if [ -n "$FRESH" ]; then
+      jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically (you'll see a '🔄 restored' line; run /reload for the full sitrep)." \
+        '{systemMessage:$m}'
+    else
+      jq -n --arg m "⚠️ cc-reload: the checkpoint turn did NOT refresh .reload/session.md — armed the existing (possibly stale) digest as a floor. Run /checkpoint to write a fresh one before you /clear." \
+        '{systemMessage:$m}'
+    fi
   else
     # The checkpoint turn ended with no digest on disk (never written, or deleted
     # mid-checkpoint). Don't arm an empty reload — SessionStart would just un-arm
@@ -46,6 +57,14 @@ fi
 
 # --- pass 1: detect when occupancy crosses the budget ---
 
+# Loop guard: stop_hook_active means this turn is ALREADY a continuation forced
+# by a Stop hook. Reaching here with it set means the pass-1/pass-2 marker
+# handshake broke (marker unwritable or deleted mid-cycle) — blocking again
+# would re-prompt the checkpoint forever. Stand down; the budget re-triggers
+# cleanly on the next ordinary Stop.
+STOP_ACTIVE="$(printf '%s' "$HOOK_INPUT" | jq -r '.stop_hook_active // false')"
+[ "$STOP_ACTIVE" = "true" ] && exit 0
+
 # Budget as a % of the window (default 45). 0 disables the proactive path.
 PCT="$(cfg context_budget_pct)"; [[ "$PCT" =~ ^[0-9]+$ ]] || PCT=45
 [ "$PCT" -gt 0 ] || exit 0
@@ -53,12 +72,19 @@ PCT="$(cfg context_budget_pct)"; [[ "$PCT" =~ ^[0-9]+$ ]] || PCT=45
 TRANSCRIPT="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""')"
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
-# Best-effort: last assistant turn's total input tokens + model id from the transcript.
-USED="$(jq -rs '
+# Best-effort: last assistant turn's total input tokens + model id from the
+# transcript, in ONE jq pass — the transcript is tens of MB near budget, and
+# this hook runs on every Stop, so it must not be slurped twice. Model ids
+# never contain spaces, so "tokens<space>model" splits unambiguously.
+LAST_TURN="$(jq -rs '
     [ .[] | select(.message.role=="assistant") ] | last
-    | (.message.usage // {})
-    | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0))
+    | (((.message.usage // {})
+        | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))
+       | tostring)
+      + " " + (.message.model // "")
   ' "$TRANSCRIPT" 2>/dev/null)"
+USED="${LAST_TURN%% *}"
+LIVE_MODEL="${LAST_TURN#* }"
 if ! [[ "$USED" =~ ^[0-9]+$ ]] || [ "$USED" -le 0 ]; then
   USED=$(( $(wc -c < "$TRANSCRIPT" 2>/dev/null || echo 0) / 4 ))   # fallback estimate
 fi
@@ -67,7 +93,6 @@ fi
 # detected. The last assistant turn carries the model id that actually ran —
 # if it differs from the stamped value, rewrite both model and window so this
 # and all future turns compute occupancy against the right window.
-LIVE_MODEL="$(jq -rs '[ .[] | select(.message.role=="assistant") ] | last | .message.model // ""' "$TRANSCRIPT" 2>/dev/null)"
 if [ -n "$LIVE_MODEL" ]; then
   STAMPED_MODEL="$(kv model "$MODELFILE")"
   if [ "$LIVE_MODEL" != "$STAMPED_MODEL" ]; then
@@ -98,8 +123,11 @@ OCCUPANCY=$(( USED * 100 / WINDOW ))
 [ "$OCCUPANCY" -ge "$PCT" ] || exit 0
 
 # pass 1: block + re-inject a focused snapshot brief (NOT a continuation of work).
+# If the marker cannot be written (read-only dir, .reload is a file, disk full),
+# do NOT block: pass 2 keys off that marker, so blocking without it would make
+# every future Stop re-enter pass 1 — an endless checkpoint prompt.
 ensure_reload_dir
-touch "$SUMMARIZING"
+touch "$SUMMARIZING" 2>/dev/null || exit 0
 REINJECT='--- cc-reload context checkpoint: write a session digest, then STOP ---
 Context is ~'"$OCCUPANCY"'% of the window (budget '"$PCT"'%). Reset before rot sets in. Capture the working thread so the next session resumes losslessly.
 
