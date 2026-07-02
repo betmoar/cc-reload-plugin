@@ -27,9 +27,10 @@ jobs:
           for f in hooks/*.sh scripts/*.sh; do bash -n "$f"; done
 
       - name: Shellcheck
-        run: shellcheck -S warning hooks/*.sh scripts/*.sh
+        run: shellcheck -S warning hooks/*.sh scripts/*.sh tests/*.sh
 
       - name: Smoke tests
         run: |
           bash tests/test-hooks.sh
           bash tests/test-statusline.sh
+          bash tests/test-config.sh

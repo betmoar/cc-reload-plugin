@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.1.7.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.1.8.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -69,6 +69,12 @@ not disclosed or configurable as a %, which is exactly why cc-reload drives the 
 
 Every hook's first actions: **fail open if `jq` is missing**, and **stand down if a cc-repete loop
 is active** (`.repete/loop.local.md` → `active: true`). See `hooks/lib.sh`.
+
+The Stop hook additionally guards its own two-pass handshake: it never blocks when
+`stop_hook_active` is set without the `summarizing` marker (a broken handshake must not re-prompt
+the checkpoint forever), never blocks if the marker can't be written, and reports honestly on
+pass 2 — a checkpoint turn that didn't actually refresh `session.md` arms the existing digest as a
+floor but says so instead of claiming "digest saved".
 
 ## Statusline (optional) — context % on the right
 
@@ -152,11 +158,13 @@ cc-reload/
 ├── hooks/{hooks.json, lib.sh, sessionstart-hook.sh, precompact-hook.sh, stop-hook.sh}
 ├── .claude-plugin/statusline.json    # statusline segment manifest (for a composer)
 ├── scripts/statusline.sh             # statusline segment renderer (native or via composer)
+├── scripts/reload-config.sh          # validated get/set for .reload/config (used by /reload-budget)
 ├── commands/{reload-budget.md, checkpoint.md, reload.md}
 ├── skills/maintaining-session-continuity/SKILL.md
 ├── templates/session.md
-├── tests/{test-hooks.sh, test-statusline.sh}   # smoke tests (run: bash tests/test-*.sh)
+├── tests/{test-hooks.sh, test-statusline.sh, test-config.sh}   # smoke tests (run: bash tests/test-*.sh)
 ├── .github/workflows/ci.yml       # bash -n + shellcheck + the test suites
+├── CLAUDE.md                      # maintainer handoff: architecture, invariants, change guide
 └── LICENSE                        # MIT
 ```
 
@@ -178,11 +186,14 @@ cc-reload/
 
 - **State is per-project, not per-session.** The `pending`, `summarizing`, and `model` markers live
   in one `.reload/` dir per project. Two Claude Code sessions open in the *same* repo at once can
-  step on each other's markers (one arms, another consumes/stamps). The SessionStart staleness
-  guard (`session_id` in the digest) protects the *rehydrate* path, but the arming markers
-  themselves are shared. Single-session-per-project use — the common case — is unaffected.
+  step on each other's markers (one arms, another consumes/stamps). There is deliberately **no
+  session-id guard** on rehydrate (removed in v0.1.5: `/clear` mints a fresh session id every time,
+  so an id-equality check suppressed the restore banner on its primary trigger) — the one-shot
+  `.reload/pending` marker is the sole gate. Single-session-per-project use — the common case — is
+  unaffected.
 
-See `SPEC.md` (from the design phase) for the full rationale, flows, and phased scope.
+See `CLAUDE.md` for the maintainer handoff: architecture map, invariants, and how to change each
+load-bearing path safely.
 
 ## License
 

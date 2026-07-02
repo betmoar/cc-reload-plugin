@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # OUT is consumed inside ck()'s eval'd assertions
 # cc-reload hook smoke tests. Run from anywhere: bash tests/test-hooks.sh
 set -uo pipefail
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)"
@@ -206,6 +207,44 @@ ck "future opus-4-10 does NOT match opus-4-1 -> 1M (not 200K)" 'grep -q "window:
 rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-50"}' >/dev/null
 ck "future sonnet-4-50 does NOT match sonnet-4-5 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+echo "== Stop pass1: stop_hook_active with no marker -> stands down (no infinite block loop) =="
+# A blocked Stop re-fires the hook with stop_hook_active:true. Normally pass 2
+# catches that turn via the summarizing marker; if the marker is gone the hook
+# must NOT re-enter pass 1, or it would re-prompt the checkpoint forever.
+printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+mktx 500000   # 50% >= 45% would normally block
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\",\"stop_hook_active\":true}")"
+ck "stop_hook_active suppresses a re-block" '[ -z "$OUT" ]'
+ck "no summarizing marker written while stood down" '[ ! -f "$TMP/.reload/summarizing" ]'
+
+echo "== Stop pass2: digest refreshed during the checkpoint turn -> success message =="
+rm -f "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/summarizing" 2>/dev/null || touch "$TMP/.reload/summarizing"
+sleep 0.01
+printf -- '---\nintent: "fresh"\n---\n## Next concrete step\nY\n' > "$TMP/.reload/session.md"   # written AFTER the marker
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "fresh digest arms" '[ -f "$TMP/.reload/pending" ]'
+ck "fresh digest reports saved" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"digest saved\")" >/dev/null'
+
+echo "== Stop pass2: digest NOT refreshed -> still arms as a floor, but warns honestly =="
+rm -f "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/session.md"   # digest predates the marker
+touch "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "stale digest still arms (floor, matches PreCompact)" '[ -f "$TMP/.reload/pending" ]'
+ck "stale digest warns it was not refreshed" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT refresh\")" >/dev/null'
+ck "stale digest clears summarizing" '[ ! -f "$TMP/.reload/summarizing" ]'
+
+echo "== Stop pass1: .reload unwritable -> refuses to block (marker handshake impossible) =="
+# A FILE named .reload defeats mkdir -p / touch even when running as root.
+# Blocking without a marker would loop forever, so the hook must stay silent.
+rm -rf "$TMP/.reload"; : > "$TMP/.reload"
+mktx 500000
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "unwritable .reload -> no block emitted" '[ -z "$OUT" ]'
+rm -f "$TMP/.reload"; mkdir -p "$TMP/.reload"
 
 echo "== Stop hook: live model from transcript updates stale model stamp =="
 # Stamp Opus 1M, but transcript says haiku-4-5 (200K). At 50k tokens that's 25% of 200K
