@@ -17,7 +17,7 @@ Requested value: **$ARGUMENTS**
    means unset → default 45).
 2. Otherwise read the old value (same `get`), then set the new one — do NOT hand-edit the file;
    the script validates the value, preserves other keys, and creates `.reload/` safely:
-   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/reload-config.sh" set context_budget_pct $ARGUMENTS`
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/reload-config.sh" set context_budget_pct "$ARGUMENTS"`
    (accepts `0`–`95` or `off`). If it exits non-zero, relay its stderr message verbatim and stop.
 3. Confirm in one line, e.g. "Reload budget → 30% of context window (was 45%). I'll prompt a
    checkpoint + /clear when context crosses ~30%."
