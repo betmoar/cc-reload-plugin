@@ -34,3 +34,4 @@ jobs:
           bash tests/test-hooks.sh
           bash tests/test-statusline.sh
           bash tests/test-config.sh
+          bash tests/test-e2e.sh

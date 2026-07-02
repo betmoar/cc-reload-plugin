@@ -103,8 +103,14 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 ## How to change things safely
 
 - **Every behavior change gets a test in the same commit.** The suites are plain bash, no
-  framework: `bash tests/test-hooks.sh && bash tests/test-statusline.sh` (exit code = #failures).
-  CI = JSON validation + `bash -n` + `shellcheck -S warning` on hooks, scripts, *and* tests.
+  framework: `bash tests/test-hooks.sh && bash tests/test-statusline.sh && bash
+  tests/test-config.sh && bash tests/test-e2e.sh` (exit code = #failures). `test-hooks`/
+  `test-statusline`/`test-config` exercise each hook and the config tool in isolation;
+  `test-e2e` chains the REAL hooks through one shared `.reload/` and asserts the working-thread
+  content round-trips session→reset→session (budget, compaction, unarmed, and stale-floor paths).
+  Prefer adding a cross-hook regression there when a change spans the marker handshake or the
+  digest→banner contract. CI = JSON validation + `bash -n` + `shellcheck -S warning` on hooks,
+  scripts, *and* tests.
 - **Keep hooks dependency-free**: bash + jq + coreutils only. `touch -t` not `touch -d`
   (BSD/macOS), literal ESC byte not `\x1b` in sed (BSD), no GNU-only flags.
 - **New model id shipped?** Add a boundary-anchored case to `model_window()` + two tests (the id,

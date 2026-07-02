@@ -41,10 +41,17 @@ INTENT="$(awk -F'"' '/^intent:/{print $2; exit}' "$DIGEST" 2>/dev/null)"
 _first_bullet() {
   awk "/^## ${1}/{f=1;next} f && /^- /{print;exit} f && /^##/{exit}" "$DIGEST" 2>/dev/null | sed 's/^- //'
 }
+# The Next-step section is a single PROSE line in the template (not a bullet like
+# Done/In-flight), so _first_bullet misses it and the banner would drop the most
+# valuable line across a reset. Grab the first non-blank content line instead,
+# stripping a leading "- " so a bulleted next step works too.
+_first_line() {
+  awk "/^## ${1}/{f=1;next} f && /^##/{exit} f && NF{print;exit}" "$DIGEST" 2>/dev/null | sed 's/^- //'
+}
 _truncate() { local s="$1" n="${2:-60}"; [ ${#s} -gt $n ] && printf '%s…' "${s:0:$n}" || printf '%s' "$s"; }
 
 DONE_LINE="$(_first_bullet 'Done this stretch')"
-NEXT_LINE="$(_first_bullet 'Next concrete step')"
+NEXT_LINE="$(_first_line 'Next concrete step')"
 INFLIGHT_LINE="$(_first_bullet 'In flight')"
 
 MSG="🔄 cc-reload (${SOURCE})"

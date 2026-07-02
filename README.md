@@ -162,7 +162,7 @@ cc-reload/
 ├── commands/{reload-budget.md, checkpoint.md, reload.md}
 ├── skills/maintaining-session-continuity/SKILL.md
 ├── templates/session.md
-├── tests/{test-hooks.sh, test-statusline.sh, test-config.sh}   # smoke tests (run: bash tests/test-*.sh)
+├── tests/{test-hooks.sh, test-statusline.sh, test-config.sh, test-e2e.sh}  # smoke + e2e (run: bash tests/test-*.sh)
 ├── .github/workflows/ci.yml       # bash -n + shellcheck + the test suites
 ├── CLAUDE.md                      # maintainer handoff: architecture, invariants, change guide
 └── LICENSE                        # MIT
