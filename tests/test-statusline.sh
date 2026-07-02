@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # OUT is consumed inside ck()'s eval'd assertions
 # cc-reload statusline segment smoke tests. Run: bash tests/test-statusline.sh
 set -uo pipefail
 S="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)"
