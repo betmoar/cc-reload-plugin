@@ -3,10 +3,22 @@
 # cc-reload Stop hook — PRIMARY path: proactive reset before context rot.
 #
 # Goal: keep manual sessions well under the auto-compact threshold (stay ~45% of
-# the window, lower per task). When occupancy crosses context_budget_pct, do a
-# two-step checkpoint so you /clear long before auto-compaction would ever fire:
+# the window, lower per task). When occupancy crosses context_budget_pct, the
+# behavior is set by context_budget_mode:
+#
+#   notify (DEFAULT)  -> emit a one-line systemMessage nudging the user to run
+#       /checkpoint + /clear (or adjust /reload-budget). No block, no forced model
+#       turn, zero model tokens. Escalation-laddered via .reload/notified: first
+#       crossing notifies, then again only when occupancy grows ≥10 points;
+#       dropping back under budget resets the ladder.
+#
+#   checkpoint        -> the two-pass automated snapshot:
 #   pass 1 (over budget)         -> block + re-inject "write .reload/session.md, then STOP"
 #   pass 2 (.reload/summarizing) -> digest written -> arm a reload + yield for /clear
+#       Pass 1 is additionally gated on the arm: once .reload/pending exists (pass 2
+#       done, or a manual /checkpoint), further over-budget Stops get the laddered
+#       reminder instead of another forced checkpoint turn — re-blocking every turn
+#       until the user /clears was the invasive failure mode this gate removes.
 #
 # Occupancy signal: the LAST assistant turn's input tokens (input + cache_read +
 # cache_creation) ≈ the full context sent that turn, INCLUDING system prompt and
@@ -120,15 +132,24 @@ if [ -z "$CW" ] && [ "$USED" -gt 200000 ] && [ "$WINDOW" -lt 1000000 ]; then
 fi
 
 OCCUPANCY=$(( USED * 100 / WINDOW ))
-[ "$OCCUPANCY" -ge "$PCT" ] || exit 0
+if [ "$OCCUPANCY" -lt "$PCT" ]; then
+  # Back under budget (bigger window detected, budget raised, or a reset): reset
+  # the notify ladder so the NEXT crossing announces itself from scratch.
+  rm -f "$NOTIFIED" 2>/dev/null
+  exit 0
+fi
 
-# pass 1: block + re-inject a focused snapshot brief (NOT a continuation of work).
-# If the marker cannot be written (read-only dir, .reload is a file, disk full),
-# do NOT block: pass 2 keys off that marker, so blocking without it would make
-# every future Stop re-enter pass 1 — an endless checkpoint prompt.
-ensure_reload_dir
-touch "$SUMMARIZING" 2>/dev/null || exit 0
-REINJECT='--- cc-reload context checkpoint: write a session digest, then STOP ---
+# --- over budget: mode decides how hard to escalate ---
+MODE="$(cfg context_budget_mode)"; [ "$MODE" = "checkpoint" ] || MODE="notify"
+
+if [ "$MODE" = "checkpoint" ] && [ ! -f "$PENDING" ]; then
+  # pass 1: block + re-inject a focused snapshot brief (NOT a continuation of work).
+  # If the marker cannot be written (read-only dir, .reload is a file, disk full),
+  # do NOT block: pass 2 keys off that marker, so blocking without it would make
+  # every future Stop re-enter pass 1 — an endless checkpoint prompt.
+  ensure_reload_dir
+  touch "$SUMMARIZING" 2>/dev/null || exit 0
+  REINJECT='--- cc-reload context checkpoint: write a session digest, then STOP ---
 Context is ~'"$OCCUPANCY"'% of the window (budget '"$PCT"'%). Reset before rot sets in. Capture the working thread so the next session resumes losslessly.
 
 Write .reload/session.md (overwrite it), tight — under ~30 lines — with frontmatter and four sections:
@@ -143,6 +164,26 @@ Write .reload/session.md (overwrite it), tight — under ~30 lines — with fron
   ## Open questions & risks
 
 Write durable artifacts to their normal homes too (commits, notes). Then STOP. Do NOT continue the work.'
-jq -n --arg r "$REINJECT" --arg m "🧹 cc-reload · context ~${OCCUPANCY}% — saving session digest before /clear" \
-  '{decision:"block", reason:$r, systemMessage:$m}'
+  jq -n --arg r "$REINJECT" --arg m "🧹 cc-reload · context ~${OCCUPANCY}% — saving session digest before /clear" \
+    '{decision:"block", reason:$r, systemMessage:$m}'
+  exit 0
+fi
+
+# Notify path — notify mode, or checkpoint mode with the reload already armed.
+# systemMessage only: user-facing, zero model tokens, never blocks. Laddered so
+# it fires on the first crossing and then only every ≥10 further points; if the
+# ladder file can't be written we'd nag on every Stop, so fail open and silent
+# instead (same philosophy as refusing to block without the marker).
+LASTN="$(cat "$NOTIFIED" 2>/dev/null)"; [[ "$LASTN" =~ ^[0-9]+$ ]] || LASTN=""
+if [ -n "$LASTN" ] && [ "$OCCUPANCY" -lt $(( LASTN + 10 )) ]; then
+  exit 0
+fi
+ensure_reload_dir
+printf '%s\n' "$OCCUPANCY" > "$NOTIFIED" 2>/dev/null || exit 0
+if [ -f "$PENDING" ]; then
+  MSG="🔔 cc-reload · context ~${OCCUPANCY}% (budget ${PCT}%) — reload armed. Run /clear to reset losslessly; run /checkpoint first if you've done more work since the last digest."
+else
+  MSG="🔔 cc-reload · context ~${OCCUPANCY}% (budget ${PCT}%) — time to reset: /checkpoint then /clear (auto-rehydrates), or /reload-budget <pct|off> to adjust."
+fi
+jq -n --arg m "$MSG" '{systemMessage:$m}'
 exit 0

@@ -22,8 +22,11 @@ The point is to **reset before rot, and long before auto-compaction** — keep a
 under the window (≈45% by default, lower per task), never let auto-compact fire.
 
 1. **Budget (primary driver)** — the Stop hook watches context occupancy; when it crosses
-   `context_budget_pct` it prompts a checkpoint + `/clear`. Tune per task with `/reload-budget
-   <pct>` — drop it to ~30 (or lower) for reasoning-heavy or context-sensitive work.
+   `context_budget_pct` it escalates per `context_budget_mode`: **notify** (default) nudges the
+   user to run `/checkpoint` + `/clear` in one status line — never blocks, re-nudges only every
+   ~10 further points; **checkpoint** forces the digest-writing turn automatically and arms the
+   reload. Tune per task with `/reload-budget <pct>` — drop it to ~30 (or lower) for
+   reasoning-heavy or context-sensitive work; `/reload-budget notify|checkpoint` switches mode.
 2. **Snapshot** — a fresh `.reload/session.md` digest is written (the budget prompts it;
    `/checkpoint` forces one; you also keep it current as you work).
 3. **Arm** — `.reload/pending` is dropped, meaning "rehydrate on the next reset." Only armed
@@ -70,8 +73,10 @@ two never run continuity at the same time — cc-reload fills the *non-looped* g
 
 ## Reset paths at a glance
 
-- **Budgeted `/clear`** (optional Stop budget on) → you're prompted to write the digest, it arms,
-  you `/clear`, it rehydrates. Fully automatic once configured.
+- **Budgeted `/clear`, notify mode (default)** → the nudge fires, the user runs `/checkpoint`
+  (digest + arm) and `/clear`, it rehydrates. The user stays in control of the timing.
+- **Budgeted `/clear`, checkpoint mode** → you're prompted to write the digest, it arms, you
+  `/clear`, it rehydrates. Fully automatic once configured.
 - **Manual `/checkpoint` then `/clear`** → deliberate snapshot before a planned reset.
 - **`/compact` / auto-compaction** → PreCompact arms + ensures a digest (fresh if you kept it so,
   else a thin fallback); SessionStart rehydrates after.

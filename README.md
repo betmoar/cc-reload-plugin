@@ -10,15 +10,21 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.1.8.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.1.9.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
 ## How it works — budget → snapshot → arm → rehydrate
 
-1. **Budget (primary)** — the `Stop` hook watches context occupancy and, when it crosses
-   `context_budget_pct` (default **45%**), prompts a checkpoint + `/clear` — so you reset *before*
-   rot and long before auto-compaction. Tune per task with `/reload-budget <pct>`.
+1. **Budget (primary)** — the `Stop` hook watches context occupancy. When it crosses
+   `context_budget_pct` (default **45%**), the escalation is set by `context_budget_mode`:
+   - **`notify` (default)** — a one-line nudge: *run `/checkpoint` then `/clear`, or
+     `/reload-budget` to adjust*. Never blocks, costs zero model tokens, and is laddered — it
+     fires at the first crossing, then again only when occupancy grows another ~10 points.
+   - **`checkpoint`** — the automated snapshot: cc-reload forces a digest-writing turn, arms the
+     reload, and asks you to `/clear`. Once armed it does **not** re-force a checkpoint; further
+     over-budget turns get the laddered reminder instead.
+   Tune per task with `/reload-budget <pct>`; switch modes with `/reload-budget notify|checkpoint`.
 2. **Snapshot** — `.reload/session.md` holds the working thread (intent / done / in flight / next
    step / open questions). The budget prompts one; `/checkpoint` writes one on demand; the skill
    keeps it fresh as you work.
@@ -63,18 +69,22 @@ not disclosed or configurable as a %, which is exactly why cc-reload drives the 
 
 | Hook           | Matcher                     | Does                                                                        |
 | -------------- | --------------------------- | --------------------------------------------------------------------------- |
-| `Stop`         | —                           | **primary:** at `context_budget_pct`, re-inject "write digest + /clear", then arm |
-| `SessionStart` | startup\|resume\|clear\|compact | stamp model+window to `.reload/model`; if armed, inject the digest, clear marker |
+| `Stop`         | —                           | **primary:** at `context_budget_pct`, nudge a checkpoint + `/clear` (`notify`, default) or force the digest turn and arm (`checkpoint`) |
+| `SessionStart` | startup\|resume\|clear\|compact | stamp model+window to `.reload/model`; purge stale markers on a real reset; if armed, inject the digest, clear marker |
 | `PreCompact`   | manual\|auto                | **backstop:** arm + ensure a digest exists (mechanical fallback)            |
 
 Every hook's first actions: **fail open if `jq` is missing**, and **stand down if a cc-repete loop
 is active** (`.repete/loop.local.md` → `active: true`). See `hooks/lib.sh`.
 
-The Stop hook additionally guards its own two-pass handshake: it never blocks when
-`stop_hook_active` is set without the `summarizing` marker (a broken handshake must not re-prompt
-the checkpoint forever), never blocks if the marker can't be written, and reports honestly on
-pass 2 — a checkpoint turn that didn't actually refresh `session.md` arms the existing digest as a
-floor but says so instead of claiming "digest saved".
+In `checkpoint` mode the Stop hook additionally guards its own two-pass handshake: it never blocks
+when `stop_hook_active` is set without the `summarizing` marker (a broken handshake must not
+re-prompt the checkpoint forever), never blocks if the marker can't be written, never re-blocks
+while a reload is already armed (`.reload/pending` — so it can't force a checkpoint turn every
+other turn until you `/clear`), and reports honestly on pass 2 — a checkpoint turn that didn't
+actually refresh `session.md` arms the existing digest as a floor but says so instead of claiming
+"digest saved". SessionStart purges a leaked `summarizing` marker (and the notify ladder) on any
+real reset (`startup|clear|compact`), so an interrupted checkpoint can't arm a dead session's
+digest into the next one.
 
 ## Statusline (optional) — context % on the right
 
@@ -138,12 +148,18 @@ your project — no change to your own `.gitignore` needed.
 `.reload/config` (per project; all optional):
 
 ```
-context_budget_pct: 45       # trigger a checkpoint+/clear at this % of the window. 0 = off. Default 45.
+context_budget_pct: 45       # act at this % of the window. 0 = off. Default 45.
+context_budget_mode: notify  # notify (default: nudge, never blocks) | checkpoint (automated digest turn)
 context_window: 1000000      # AUTHORITATIVE window override in tokens. Set this for your main model.
 ```
 
 - **`context_budget_pct`** — the proactive trigger. Set it low for context-sensitive tasks
   (`/reload-budget 30`), higher for more work per session. Default **45**.
+- **`context_budget_mode`** — how hard the budget escalates. **`notify`** (default) emits a
+  one-line, escalation-laddered nudge and leaves the reset to you — least invasive, zero model
+  tokens. **`checkpoint`** spends a model turn writing the digest automatically and arms the
+  reload — hands-off continuity at the cost of an interruption. Both are per-project;
+  `/reload-budget notify|checkpoint` switches.
 - **`context_window`** — overrides window detection and **always wins**. `SessionStart` tries to
   detect it from the live model id, but model ids change (e.g. Sonnet 5's 1M window), and a wrong
   guess would skew the % badly. **Set this once for your main session model** — e.g. `1000000` for
@@ -184,8 +200,8 @@ cc-reload/
 
 ## Known limitations
 
-- **State is per-project, not per-session.** The `pending`, `summarizing`, and `model` markers live
-  in one `.reload/` dir per project. Two Claude Code sessions open in the *same* repo at once can
+- **State is per-project, not per-session.** The `pending`, `summarizing`, `notified`, and `model`
+  markers live in one `.reload/` dir per project. Two Claude Code sessions open in the *same* repo at once can
   step on each other's markers (one arms, another consumes/stamps). There is deliberately **no
   session-id guard** on rehydrate (removed in v0.1.5: `/clear` mints a fresh session id every time,
   so an id-equality check suppressed the restore banner on its primary trigger) — the one-shot

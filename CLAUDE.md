@@ -10,8 +10,8 @@ without breaking the others.
 Three bash hooks + three slash commands + one skill that keep a Claude Code session's working
 thread alive across context resets. State machine on disk under the user's project at `.reload/`:
 a digest (`session.md`), a one-shot arm marker (`pending`), a two-pass handshake marker
-(`summarizing`), a model/window stamp (`model`), and per-project config (`config`). There is no
-daemon, no network, no state anywhere else.
+(`summarizing`), a notify ladder (`notified`), a model/window stamp (`model`), and per-project
+config (`config`). There is no daemon, no network, no state anywhere else.
 
 ## Control flow (the whole system)
 
@@ -21,15 +21,23 @@ Stop hook (every turn end)
   │     (fresh digest → success msg; digest not rewritten this turn → arm anyway, warn honestly;
   │      no digest → do NOT arm, warn)
   ├─ stop_hook_active && no marker? → stand down (broken handshake must never re-block = loop)
-  ├─ occupancy < budget?          → exit silently
-  └─ occupancy ≥ budget           → PASS 1: write `summarizing` marker (or refuse to block),
-        emit {decision:"block"} re-injecting "write .reload/session.md, then STOP"
+  ├─ occupancy < budget?          → clear the `notified` ladder, exit silently
+  └─ occupancy ≥ budget           → branch on context_budget_mode (default notify):
+        ├─ checkpoint mode AND not armed (`pending` absent)
+        │   → PASS 1: write `summarizing` marker (or refuse to block),
+        │     emit {decision:"block"} re-injecting "write .reload/session.md, then STOP"
+        └─ notify mode, OR checkpoint mode already armed
+            → laddered nudge: {systemMessage} only — never blocks, zero model tokens.
+              Fires on first crossing, then only at last-notified +10 points (`notified`
+              stores the %). Ladder unwritable → silent (else it would nag every turn).
 
 PreCompact hook (manual /compact or auto-compaction)
   └─ arm `pending`; if no digest exists, write a mechanical fallback stub (honest about being thin)
 
 SessionStart hook (startup|resume|clear|compact)
   ├─ stamp model id + resolved window to .reload/model (Stop gets no model field — this bridges it)
+  ├─ startup|clear|compact (NOT resume) → purge leaked `summarizing` + `notified`; a handshake
+  │     must not outlive its context (see invariant 10)
   └─ `pending` present? → inject digest as additionalContext + visible systemMessage banner;
         consume the marker (one-shot). Not armed → do nothing (a deliberate /clear is respected).
 ```
@@ -67,6 +75,18 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 8. **Hooks are silent when they have nothing to say.** No output = no user-visible noise and no
    JSON for Claude Code to parse. Never emit partial/invalid JSON; build all JSON with
    `jq -n --arg` (never string interpolation — digest content is untrusted for quoting purposes).
+9. **Over budget never blocks when a reload is already armed — and never blocks at all in notify
+   mode (the default).** Pre-v0.1.9, pass 1 ignored `pending`: once over budget, every second turn
+   became a forced checkpoint turn until the user /clear'd (audit F01). The nudge/reminder is
+   escalation-laddered (+10 points via `notified`); an unwritable ladder means silence, not
+   per-turn nagging. (Tests: "armed reload suppresses re-block", "notify never blocks",
+   "ladder suppresses repeats"; e2e cycle 5.)
+10. **Markers don't outlive their context.** SessionStart purges `summarizing` + `notified` on
+    startup|clear|compact — NOT on resume, where the context (and possibly a mid-flight handshake)
+    genuinely persists. Without this, an interrupted checkpoint turn followed by /clear left
+    `summarizing` behind, and the fresh session's first Stop ran a phantom pass 2 that armed the
+    dead session's digest (audit F03). (Tests: "clear purges the leaked handshake", "resume keeps
+    a mid-flight handshake"; e2e cycle 6.)
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -88,6 +108,18 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 - **Why `set -uo pipefail` but not `-e`?** Fail-open philosophy: a broken hook must degrade to
   "plugin does nothing", never to "session unusable". Guard specific failure points explicitly
   (e.g. `touch … || exit 0`) instead of letting `-e` kill the script at an arbitrary line.
+- **Why is notify the default mode (v0.1.9)?** A forced checkpoint turn costs ~1–3K model tokens
+  and interrupts flow; users who found it invasive disabled the budget entirely (pct 0) and lost
+  the safety net — the invasive default undermined the plugin's own purpose. A systemMessage nudge
+  costs zero model tokens, and the statusline gauge + PreCompact backstop still cover the
+  inattentive case. **Rejected:** re-blocking every +10 points in checkpoint mode (re-introduces
+  the token cost the mode split exists to remove); per-turn notifications without a ladder
+  (trains users to ignore the nudge); a "block once per session" flag instead of keying on
+  `pending` (a new marker to leak — `pending` already encodes exactly "the checkpoint happened").
+- **Why does the notify ladder live in a file, not the message?** A hook is stateless per
+  invocation; without `notified` the nudge would fire on every Stop over budget. The ladder is
+  cleared when occupancy drops under budget and on any real reset (SessionStart hygiene), so a new
+  climb always announces itself.
 
 ## Couplings — if you touch X, also update Y
 
@@ -98,6 +130,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
+| `context_budget_mode` semantics (default notify) or the +10 ladder step | `stop-hook.sh` (mode branch + ladder), `scripts/reload-config.sh` (validation), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1 + reset paths |
 | Anything in `hooks/hooks.json` | plugin must not ALSO declare hooks in plugin.json (duplicate-hooks load error — v0.1.2 regression) |
 
 ## How to change things safely
@@ -145,3 +178,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
    (arms + warns — degraded but safe). Only matters if users report spurious stale warnings.
 3. **Haiku 5+ ids**: `*haiku*` maps to 200K with no minor split. If a future Haiku ships 1M,
    add boundary-anchored cases before the heuristic misfires (config override covers the gap).
+4. **Banner truncation byte-slices UTF-8 under macOS bash 3.2** (`_truncate` in
+   `sessionstart-hook.sh` uses `${s:0:n}`, byte-based on bash 3.2 — audit F04, cosmetic). If users
+   report mojibake banners, replace with an awk-based char-safe cut:
+   `awk -v n=60 '{print substr($0,1,n)}'` (awk substr is char-aware under a UTF-8 locale).

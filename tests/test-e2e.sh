@@ -46,13 +46,13 @@ MAGIC-NEXT-b52 run the e2e suite, then squash-merge to main
 EOF
 }
 
-# ── CYCLE 1: the budgeted primary path, session A → /clear → session B ──────────
-echo "== E2E cycle 1: budget → pass1 block → digest authored → pass2 arm → /clear rehydrate =="
+# ── CYCLE 1: the budgeted automated path (checkpoint mode), session A → /clear → session B ──
+echo "== E2E cycle 1: checkpoint mode → pass1 block → digest authored → pass2 arm → /clear rehydrate =="
 
 # Session A boots: stamp the model+window so Stop can compute a real %.
 run sessionstart-hook.sh '{"session_id":"SESS-A","source":"startup","model":"claude-opus-4-8"}' >/dev/null
 ck "1.0 session A stamped a 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
-printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/session.md"
 
 # Occupancy crosses budget (50% ≥ 45%): pass 1 must block and demand a digest.
@@ -116,5 +116,52 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "4.1 stale digest still arms (floor)" '[ -f "$TMP/.reload/pending" ]'
 ck "4.2 stale save is flagged honestly"  'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT refresh\")" >/dev/null'
 ck "4.3 handshake cleared"               '[ ! -f "$TMP/.reload/summarizing" ]'
+
+# ── CYCLE 5: notify-first (DEFAULT mode) — nudge, manual /checkpoint, /clear rehydrate ──
+echo "== E2E cycle 5: notify default → nudge only → manual /checkpoint → /clear rehydrate =="
+printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"   # no mode key -> notify default
+rm -f "$TMP/.reload/pending" "$TMP/.reload/notified" "$TMP/.reload/summarizing"
+mktx 500000   # 50% >= 45%
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "5.1 nudge names /checkpoint + the %"   'printf "%s" "$OUT" | jq -e "(.systemMessage|test(\"/checkpoint\")) and (.systemMessage|test(\"50%\"))" >/dev/null'
+ck "5.2 no block on the nudge"             'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null'
+ck "5.3 no handshake marker in notify"     '[ ! -f "$TMP/.reload/summarizing" ]'
+ck "5.4 nothing armed by the nudge"        '[ ! -f "$TMP/.reload/pending" ]'
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "5.5 next turn same occupancy -> silent" '[ -z "$OUT" ]'
+# The user answers the nudge with /checkpoint: the command writes the digest and arms.
+cat > "$TMP/.reload/session.md" <<'EOF'
+---
+session_id: "SESS-N"
+updated_at: "2026-07-10T00:00:00Z"
+intent: "notify-mode continuity check"
+---
+## Done this stretch
+- MAGIC-N5-DONE
+## In flight
+- nothing
+## Next concrete step
+MAGIC-N5-NEXT resume here
+## Open questions & risks
+- none
+EOF
+touch "$TMP/.reload/pending"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "5.6 armed + already nudged -> still silent, still no block" '[ -z "$OUT" ]'
+OUT="$(run sessionstart-hook.sh '{"session_id":"SESS-N2","source":"clear","model":"claude-opus-4-8"}')"
+ck "5.7 /clear rehydrates the manual digest" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-N5-NEXT\")" >/dev/null'
+ck "5.8 arm consumed"                        '[ ! -f "$TMP/.reload/pending" ]'
+ck "5.9 notify ladder reset by the /clear"   '[ ! -f "$TMP/.reload/notified" ]'
+
+# ── CYCLE 6: interrupted checkpoint — leaked handshake must not poison the next session ──
+echo "== E2E cycle 6: leaked summarizing marker is purged on /clear (no stale arm) =="
+touch "$TMP/.reload/summarizing"; rm -f "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"SESS-F","source":"clear","model":"claude-opus-4-8"}')"
+ck "6.1 unarmed clear stays silent"          '[ -z "$OUT" ]'
+ck "6.2 leaked handshake purged"             '[ ! -f "$TMP/.reload/summarizing" ]'
+mktx 50000   # 5% — fresh session, well under budget
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "6.3 first Stop of fresh session is silent (no phantom pass 2)" '[ -z "$OUT" ]'
+ck "6.4 nothing armed in the fresh session"  '[ ! -f "$TMP/.reload/pending" ]'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

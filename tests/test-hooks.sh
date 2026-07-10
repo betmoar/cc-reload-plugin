@@ -81,8 +81,8 @@ mktx 900000
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "pct=0 -> inert" '[ -z "$OUT" ]'
 
-echo "== Stop budget: over threshold -> pass1 block, pass2 arm =="
-printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"
+echo "== Stop budget: over threshold (checkpoint mode) -> pass1 block, pass2 arm =="
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
 mktx 500000   # 500k of 1M = 50% >= 45%
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
@@ -124,7 +124,7 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "auto-corrected to 1M -> 30% -> no trigger" '[ -z "$OUT" ]'
 
 echo "== Stop budget: context_window override wins (pins 200k) =="
-printf 'context_budget_pct: 45\ncontext_window: 200000\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 200000\n' > "$TMP/.reload/config"
 mktx 300000   # pinned 200k -> 150% -> must trigger despite usage>200k
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
@@ -212,7 +212,7 @@ echo "== Stop pass1: stop_hook_active with no marker -> stands down (no infinite
 # A blocked Stop re-fires the hook with stop_hook_active:true. Normally pass 2
 # catches that turn via the summarizing marker; if the marker is gone the hook
 # must NOT re-enter pass 1, or it would re-prompt the checkpoint forever.
-printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 1000000\n' > "$TMP/.reload/config"
 mktx 500000   # 50% >= 45% would normally block
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\",\"stop_hook_active\":true}")"
@@ -237,25 +237,90 @@ ck "stale digest still arms (floor, matches PreCompact)" '[ -f "$TMP/.reload/pen
 ck "stale digest warns it was not refreshed" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT refresh\")" >/dev/null'
 ck "stale digest clears summarizing" '[ ! -f "$TMP/.reload/summarizing" ]'
 
-echo "== Stop pass1: .reload unwritable -> refuses to block (marker handshake impossible) =="
-# A FILE named .reload defeats mkdir -p / touch even when running as root.
-# Blocking without a marker would loop forever, so the hook must stay silent.
+echo "== Stop: .reload unwritable -> silent (no block, no nagging notify) =="
+# A FILE named .reload defeats mkdir -p / touch even when running as root. With
+# .reload unreadable the mode defaults to notify, and a notify whose ladder can't
+# be written would nag on EVERY Stop — so the hook must stay silent entirely.
 rm -rf "$TMP/.reload"; : > "$TMP/.reload"
 mktx 500000
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
-ck "unwritable .reload -> no block emitted" '[ -z "$OUT" ]'
+ck "unwritable .reload -> silent" '[ -z "$OUT" ]'
 rm -f "$TMP/.reload"; mkdir -p "$TMP/.reload"
+
+echo "== Stop pass1 (checkpoint mode): unwritable summarizing -> refuses to block =="
+# Blocking without the marker on disk would re-prompt the checkpoint forever
+# (pass 2 keys off it). A dangling symlink makes touch fail even as root while
+# .reload/config stays readable, so this pins the checkpoint-mode refusal.
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+ln -s "$TMP/nonexistent-dir/x" "$TMP/.reload/summarizing"
+rm -f "$TMP/.reload/pending"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "marker unwritable -> no block emitted" '[ -z "$OUT" ]'
+ck "marker unwritable -> nothing armed" '[ ! -f "$TMP/.reload/pending" ]'
+rm -f "$TMP/.reload/summarizing"
 
 echo "== Stop hook: live model from transcript updates stale model stamp =="
 # Stamp Opus 1M, but transcript says haiku-4-5 (200K). At 50k tokens that's 25% of 200K
 # which should trigger at 5% budget. With the stale 1M stamp it would be 5% -> borderline.
 printf 'model: claude-opus-4-8[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
-printf 'context_budget_pct: 5\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 5\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
 # Transcript with model field on assistant turn
 printf '{"message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "live model refreshes stamp to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
 ck "50k/200K=25% > 5% budget -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
+
+echo "== Stop notify (DEFAULT mode): over budget -> nudge only, never blocks, no handshake =="
+printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/config"   # no mode key -> notify
+mktx 500000   # 50% >= 45%
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "notify emits a /checkpoint nudge" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"/checkpoint\")" >/dev/null'
+ck "notify never blocks" 'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null'
+ck "notify writes no summarizing marker" '[ ! -f "$TMP/.reload/summarizing" ]'
+ck "notify does not arm by itself" '[ ! -f "$TMP/.reload/pending" ]'
+ck "ladder recorded at 50" '[ "$(cat "$TMP/.reload/notified")" = "50" ]'
+
+echo "== Stop notify: ladder suppresses repeats; +10 points re-notifies =="
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "same occupancy -> silent" '[ -z "$OUT" ]'
+mktx 600000   # 60% = 50 + 10 -> re-notify
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "+10 points -> re-notifies" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"60%\")" >/dev/null'
+ck "ladder advanced to 60" '[ "$(cat "$TMP/.reload/notified")" = "60" ]'
+
+echo "== Stop notify: dropping under budget resets the ladder =="
+mktx 100000   # 10% < 45%
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "under budget -> silent" '[ -z "$OUT" ]'
+ck "under budget -> ladder cleared" '[ ! -f "$TMP/.reload/notified" ]'
+
+echo "== Stop checkpoint mode: armed reload suppresses re-block -> laddered reminder =="
+# Once pass 2 (or a manual /checkpoint) armed the reload, further over-budget
+# Stops must NOT force another checkpoint turn — that re-blocked every second
+# turn until the user /clear'd (audit F01).
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+mktx 500000
+rm -f "$TMP/.reload/summarizing" "$TMP/.reload/notified"; touch "$TMP/.reload/pending"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "armed -> no re-block" 'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null'
+ck "armed -> reminder says reload armed" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"armed\")" >/dev/null'
+ck "armed -> no new handshake marker" '[ ! -f "$TMP/.reload/summarizing" ]'
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "armed reminder is laddered -> silent repeat" '[ -z "$OUT" ]'
+rm -f "$TMP/.reload/pending" "$TMP/.reload/notified"
+
+echo "== SessionStart hygiene: clear purges leaked handshake + ladder; resume keeps them =="
+# Interrupted checkpoint turn + /clear leaked `summarizing` into the fresh
+# session, whose first Stop then armed the dead session's digest (audit F03).
+touch "$TMP/.reload/summarizing"; printf '50\n' > "$TMP/.reload/notified"
+rm -f "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S1","source":"resume"}')"
+ck "resume keeps a mid-flight handshake" '[ -f "$TMP/.reload/summarizing" ]'
+ck "resume keeps the notify ladder" '[ -f "$TMP/.reload/notified" ]'
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "clear purges the leaked handshake" '[ ! -f "$TMP/.reload/summarizing" ]'
+ck "clear purges the notify ladder" '[ ! -f "$TMP/.reload/notified" ]'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
