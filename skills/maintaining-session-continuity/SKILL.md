@@ -1,16 +1,15 @@
 ---
 name: maintaining-session-continuity
 description: >-
-  Use for continuity of a plain (non-looped) Claude Code session across a context reset — both to
-  *do* it and to *explain how it works*. Covers cc-reload's snapshot → arm → rehydrate cycle:
-  writing/refreshing the `.reload/session.md` digest, arming reload, and rehydrating after `/clear`,
-  `/compact`, or auto-compaction. Trigger when the user wants to save where they are before
-  clearing/compacting, hand off mid-task so a later session resumes, hold working state as context
-  fills, OR asks how any part of that mechanism works, or names cc-reload, `.reload/`, checkpoint,
-  rehydrate, or a session digest. This is about carrying the conversation's own progress forward —
-  not fixing the model's outputs. Do NOT use for debugging wrong or hallucinated results (bad paths,
-  made-up APIs), summarizing code into docs, git squash/rebase, or switching to a larger-window
-  model. Stand down while a cc-repete autonomous loop is active — that tool owns continuity there.
+  Continuity for a plain (non-looped) Claude Code session across a context reset — both doing it and
+  explaining how. cc-reload snapshot → arm → rehydrate: write/refresh `.reload/session.md` digest,
+  arm reload, rehydrate after `/clear`, `/compact`, or auto-compaction. Trigger when user wants to
+  save state before clearing/compacting, hand off mid-task for a later session to resume, hold
+  working state as context fills, asks how any part works, or names cc-reload, `.reload/`, /snapshot,
+  reload, rehydrate, session digest. Carrying the conversation's own progress forward — not fixing
+  model outputs. NOT for debugging wrong/hallucinated results (bad paths, made-up APIs), summarizing
+  code into docs, git squash/rebase, or switching to a larger-window model. Stand down while a
+  cc-repete loop active — cc-repete owns continuity.
 ---
 
 # Maintaining session continuity
