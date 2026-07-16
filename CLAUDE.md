@@ -23,10 +23,10 @@ Stop hook (every turn end)
   ├─ stop_hook_active && no marker? → stand down (broken handshake must never re-block = loop)
   ├─ occupancy < budget?          → clear the `notified` ladder, exit silently
   └─ occupancy ≥ budget           → branch on context_budget_mode (default notify):
-        ├─ checkpoint mode AND not armed (`pending` absent)
+        ├─ snapshot mode AND not armed (`pending` absent)   [legacy value `checkpoint` aliases here]
         │   → PASS 1: write `summarizing` marker (or refuse to block),
         │     emit {decision:"block"} re-injecting "write .reload/session.md, then STOP"
-        └─ notify mode, OR checkpoint mode already armed
+        └─ notify mode, OR snapshot mode already armed
             → laddered nudge: {systemMessage} only — never blocks, zero model tokens.
               Fires on first crossing, then only at last-notified +10 points (`notified`
               stores the %). Ladder unwritable → silent (else it would nag every turn).
@@ -49,10 +49,10 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 
 1. **Pass 2 always completes.** Once pass 1 blocked, the next Stop must consume `summarizing` and
    settle the arm *before* any budget/transcript gating — disabling the budget or losing the
-   transcript mid-checkpoint must never strand the marker. (Tests: "pass2 completes even …")
+   transcript mid-snapshot must never strand the marker. (Tests: "pass2 completes even …")
 2. **Never block without the marker on disk.** The block/continue loop only terminates because
    pass 2 keys off `summarizing`. If the marker can't be written, or `stop_hook_active` is set
-   with no marker, the hook stands down. Violating this = infinite checkpoint prompt.
+   with no marker, the hook stands down. Violating this = infinite snapshot prompt.
    (Tests: "stop_hook_active suppresses a re-block", "unwritable .reload -> no block")
 3. **`pending` is the sole rehydrate gate, and it is one-shot.** No session-id comparison —
    `/clear` mints a fresh id every time, so an id-equality guard suppresses the banner on its
@@ -62,7 +62,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
    un-arms if the digest vanished. A stale-but-existing digest IS armed (same floor PreCompact
    provides) but the message says so. (Tests: "pass2 without digest…", "stale digest…")
 5. **Unknown window ⇒ assume 1M (optimistic).** A wrong 200K guess on a 1M model nags at ~9% real
-   occupancy — far worse than checkpointing a small session late (PreCompact still backstops it).
+   occupancy — far worse than snapshotting a small session late (PreCompact still backstops it).
    Same reason the >200K-observed-usage self-heal only ever *raises* the window. A **valid**
    `context_window` override pins everything; an *invalid* one (0, garbage) must behave exactly
    like no override — it feeds a division and gates the self-heal. (Tests: "window UNKNOWN…",
@@ -77,13 +77,13 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
    `jq -n --arg` (never string interpolation — digest content is untrusted for quoting purposes).
 9. **Over budget never blocks when a reload is already armed — and never blocks at all in notify
    mode (the default).** Pre-v0.1.9, pass 1 ignored `pending`: once over budget, every second turn
-   became a forced checkpoint turn until the user /clear'd (audit F01). The nudge/reminder is
+   became a forced snapshot turn until the user /clear'd (audit F01). The nudge/reminder is
    escalation-laddered (+10 points via `notified`); an unwritable ladder means silence, not
    per-turn nagging. (Tests: "armed reload suppresses re-block", "notify never blocks",
    "ladder suppresses repeats"; e2e cycle 5.)
 10. **Markers don't outlive their context.** SessionStart purges `summarizing` + `notified` on
     startup|clear|compact — NOT on resume, where the context (and possibly a mid-flight handshake)
-    genuinely persists. Without this, an interrupted checkpoint turn followed by /clear left
+    genuinely persists. Without this, an interrupted snapshot turn followed by /clear left
     `summarizing` behind, and the fresh session's first Stop ran a phantom pass 2 that armed the
     dead session's digest (audit F03). (Tests: "clear purges the leaked handshake", "resume keeps
     a mid-flight handshake"; e2e cycle 6.)
@@ -108,14 +108,14 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 - **Why `set -uo pipefail` but not `-e`?** Fail-open philosophy: a broken hook must degrade to
   "plugin does nothing", never to "session unusable". Guard specific failure points explicitly
   (e.g. `touch … || exit 0`) instead of letting `-e` kill the script at an arbitrary line.
-- **Why is notify the default mode (v0.1.9)?** A forced checkpoint turn costs ~1–3K model tokens
+- **Why is notify the default mode (v0.1.9)?** A forced snapshot turn costs ~1–3K model tokens
   and interrupts flow; users who found it invasive disabled the budget entirely (pct 0) and lost
   the safety net — the invasive default undermined the plugin's own purpose. A systemMessage nudge
   costs zero model tokens, and the statusline gauge + PreCompact backstop still cover the
-  inattentive case. **Rejected:** re-blocking every +10 points in checkpoint mode (re-introduces
+  inattentive case. **Rejected:** re-blocking every +10 points in snapshot mode (re-introduces
   the token cost the mode split exists to remove); per-turn notifications without a ladder
   (trains users to ignore the nudge); a "block once per session" flag instead of keying on
-  `pending` (a new marker to leak — `pending` already encodes exactly "the checkpoint happened").
+  `pending` (a new marker to leak — `pending` already encodes exactly "the snapshot happened").
 - **Why does the notify ladder live in a file, not the message?** A hook is stateless per
   invocation; without `notified` the nudge would fire on every Stop over budget. The ladder is
   cleared when occupancy drops under budget and on any real reset (SessionStart hygiene), so a new
@@ -125,12 +125,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 
 | You changed | You must also check |
 |---|---|
-| Digest format / section names | `templates/session.md`, the pass-1 REINJECT heredoc in `stop-hook.sh`, `_first_bullet` calls in `sessionstart-hook.sh`, `commands/checkpoint.md`, the skill |
+| Digest format / section names | `templates/session.md`, the pass-1 REINJECT heredoc in `stop-hook.sh`, `_first_bullet` calls in `sessionstart-hook.sh`, `commands/snapshot.md`, the skill |
 | Marker file names/locations (`lib.sh` constants) | both test files, README "Layout" + hook table |
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
-| `context_budget_mode` semantics (default notify) or the +10 ladder step | `stop-hook.sh` (mode branch + ladder), `scripts/reload-config.sh` (validation), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1 + reset paths |
+| `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1 + reset paths, both test files' alias cases |
 | Anything in `hooks/hooks.json` | plugin must not ALSO declare hooks in plugin.json (duplicate-hooks load error — v0.1.2 regression) |
 
 ## How to change things safely
@@ -164,7 +164,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
   session that still has its context. Redundant but harmless; removing `resume` from the matcher
   would drop the model/window stamp on resume, which Stop needs. Accepted trade-off.
 - The transcript `message.usage` schema is undocumented; if it disappears the byte/4 fallback
-  silently takes over (earlier, noisier triggers). If users report premature checkpoints, check
+  silently takes over (earlier, noisier triggers). If users report premature snapshots, check
   this first.
 
 ## Backlog (prioritized, with context)

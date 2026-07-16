@@ -20,6 +20,8 @@ jobs:
       - name: Validate JSON
         run: |
           jq -e . .claude-plugin/plugin.json > /dev/null
+          jq -e . .claude-plugin/marketplace.json > /dev/null
+          jq -e . .claude-plugin/statusline.json > /dev/null
           jq -e . hooks/hooks.json > /dev/null
 
       - name: Syntax check shell

@@ -40,14 +40,20 @@ ck "config unchanged after rejections" 'cmp -s "$TMP/before" "$TMP/.reload/confi
 ERR="$(rc set context_budget_pct 96 2>&1 || true)"
 ck "rejection message is actionable" 'printf "%s" "$ERR" | grep -q "0-95"'
 
-echo "== context_budget_mode: notify|checkpoint accepted, junk rejected =="
-rc set context_budget_mode checkpoint >/dev/null
-ck "mode checkpoint set" '[ "$(rc get context_budget_mode)" = "checkpoint" ]'
+echo "== context_budget_mode: notify|snapshot accepted, junk rejected =="
+rc set context_budget_mode snapshot >/dev/null
+ck "mode snapshot set" '[ "$(rc get context_budget_mode)" = "snapshot" ]'
 rc set context_budget_mode notify >/dev/null
 ck "mode notify set" '[ "$(rc get context_budget_mode)" = "notify" ]'
 ck "mode junk rejected (exit 2)" '! rc set context_budget_mode sometimes 2>/dev/null'
 ck "mode unchanged after rejection" '[ "$(rc get context_budget_mode)" = "notify" ]'
 ERR="$(rc set context_budget_mode sometimes 2>&1 || true)"
-ck "mode rejection names both values" 'printf "%s" "$ERR" | grep -q "notify" && printf "%s" "$ERR" | grep -q "checkpoint"'
+ck "mode rejection names both values" 'printf "%s" "$ERR" | grep -q "notify" && printf "%s" "$ERR" | grep -q "snapshot"'
+
+echo "== context_budget_mode: legacy 'checkpoint' aliases to 'snapshot' (back-compat) =="
+rc set context_budget_mode checkpoint >/dev/null
+ck "checkpoint accepted (exit 0)" 'true'
+ck "checkpoint normalized to snapshot on write" '[ "$(rc get context_budget_mode)" = "snapshot" ]'
+rc set context_budget_mode notify >/dev/null
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

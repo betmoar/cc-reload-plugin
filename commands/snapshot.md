@@ -4,7 +4,7 @@ argument-hint: [optional note to fold into the digest]
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
 
-# Checkpoint this session
+# Snapshot this session
 
 Write a fresh session digest so the working thread survives a context reset, and arm cc-reload
 to rehydrate it automatically on the next `/clear` or `/compact`.

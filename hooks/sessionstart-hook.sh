@@ -21,9 +21,9 @@ if [ -n "$MODEL" ]; then
 fi
 
 # Marker hygiene on a genuine context reset (NOT resume — a resumed session keeps
-# its context, so a mid-flight checkpoint handshake may legitimately complete and
+# its context, so a mid-flight snapshot handshake may legitimately complete and
 # the notify ladder still reflects real occupancy):
-#   - a leaked `summarizing` (pass 1 blocked, user interrupted the checkpoint turn,
+#   - a leaked `summarizing` (pass 1 blocked, user interrupted the snapshot turn,
 #     then /clear'd) must not survive into the fresh session, where the first Stop
 #     would run pass 2 and arm a dead session's digest with a misleading warning.
 #   - the notify ladder resets so the next budget crossing announces itself.

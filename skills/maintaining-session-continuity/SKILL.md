@@ -26,12 +26,12 @@ under the window (≈45% by default, lower per task), never let auto-compact fir
 
 1. **Budget (primary driver)** — the Stop hook watches context occupancy; when it crosses
    `context_budget_pct` it escalates per `context_budget_mode`: **notify** (default) nudges the
-   user to run `/checkpoint` + `/clear` in one status line — never blocks, re-nudges only every
-   ~10 further points; **checkpoint** forces the digest-writing turn automatically and arms the
+   user to run `/snapshot` + `/clear` in one status line — never blocks, re-nudges only every
+   ~10 further points; **snapshot** forces the digest-writing turn automatically and arms the
    reload. Tune per task with `/reload-budget <pct>` — drop it to ~30 (or lower) for
-   reasoning-heavy or context-sensitive work; `/reload-budget notify|checkpoint` switches mode.
+   reasoning-heavy or context-sensitive work; `/reload-budget notify|snapshot` switches mode.
 2. **Snapshot** — a fresh `.reload/session.md` digest is written (the budget prompts it;
-   `/checkpoint` forces one; you also keep it current as you work).
+   `/snapshot` forces one; you also keep it current as you work).
 3. **Arm** — `.reload/pending` is dropped, meaning "rehydrate on the next reset." Only armed
    resets rehydrate, so a deliberate `/clear` you *want* to drop context isn't undone.
 4. **Rehydrate** — on the next `/clear` / `/compact`, the SessionStart hook injects the digest and
@@ -76,11 +76,11 @@ two never run continuity at the same time — cc-reload fills the *non-looped* g
 
 ## Reset paths at a glance
 
-- **Budgeted `/clear`, notify mode (default)** → the nudge fires, the user runs `/checkpoint`
+- **Budgeted `/clear`, notify mode (default)** → the nudge fires, the user runs `/snapshot`
   (digest + arm) and `/clear`, it rehydrates. The user stays in control of the timing.
-- **Budgeted `/clear`, checkpoint mode** → you're prompted to write the digest, it arms, you
+- **Budgeted `/clear`, snapshot mode** → you're prompted to write the digest, it arms, you
   `/clear`, it rehydrates. Fully automatic once configured.
-- **Manual `/checkpoint` then `/clear`** → deliberate snapshot before a planned reset.
+- **Manual `/snapshot` then `/clear`** → deliberate snapshot before a planned reset.
 - **`/compact` / auto-compaction** → PreCompact arms + ensures a digest (fresh if you kept it so,
   else a thin fallback); SessionStart rehydrates after.
 - **Deliberate `/clear`, nothing armed** → no rehydration. Respected.

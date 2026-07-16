@@ -81,8 +81,8 @@ mktx 900000
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "pct=0 -> inert" '[ -z "$OUT" ]'
 
-echo "== Stop budget: over threshold (checkpoint mode) -> pass1 block, pass2 arm =="
-printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
+echo "== Stop budget: over threshold (snapshot mode) -> pass1 block, pass2 arm =="
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\n' > "$TMP/.reload/config"
 mktx 500000   # 500k of 1M = 50% >= 45%
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
@@ -92,6 +92,18 @@ ck "summarizing marker set" '[ -f "$TMP/.reload/summarizing" ]'
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "pass2 arms reload" '[ -f "$TMP/.reload/pending" ]'
 ck "pass2 clears summarizing" '[ ! -f "$TMP/.reload/summarizing" ]'
+
+echo "== Stop budget: legacy 'checkpoint' mode value still blocks (back-compat alias) =="
+# A .reload/config written before the v0.2.0 rename holds 'checkpoint'; the Stop
+# hook must read it as 'snapshot' and still run pass 1, or old configs silently
+# fall back to notify and lose the automated path.
+printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
+mktx 500000
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "legacy checkpoint value -> pass1 block" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
+ck "legacy checkpoint value -> summarizing set" '[ -f "$TMP/.reload/summarizing" ]'
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 
 echo "== Stop budget: pass2 completes even if occupancy dips below budget (no stranded marker) =="
 printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/config"
@@ -124,7 +136,7 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "auto-corrected to 1M -> 30% -> no trigger" '[ -z "$OUT" ]'
 
 echo "== Stop budget: context_window override wins (pins 200k) =="
-printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 200000\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\ncontext_window: 200000\n' > "$TMP/.reload/config"
 mktx 300000   # pinned 200k -> 150% -> must trigger despite usage>200k
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
@@ -212,7 +224,7 @@ echo "== Stop pass1: stop_hook_active with no marker -> stands down (no infinite
 # A blocked Stop re-fires the hook with stop_hook_active:true. Normally pass 2
 # catches that turn via the summarizing marker; if the marker is gone the hook
 # must NOT re-enter pass 1, or it would re-prompt the checkpoint forever.
-printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\ncontext_window: 1000000\n' > "$TMP/.reload/config"
 mktx 500000   # 50% >= 45% would normally block
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\",\"stop_hook_active\":true}")"
@@ -251,7 +263,7 @@ echo "== Stop pass1 (checkpoint mode): unwritable summarizing -> refuses to bloc
 # Blocking without the marker on disk would re-prompt the checkpoint forever
 # (pass 2 keys off it). A dangling symlink makes touch fail even as root while
 # .reload/config stays readable, so this pins the checkpoint-mode refusal.
-printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\ncontext_window: 1000000\n' > "$TMP/.reload/config"
 ln -s "$TMP/nonexistent-dir/x" "$TMP/.reload/summarizing"
 rm -f "$TMP/.reload/pending"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
@@ -263,7 +275,7 @@ echo "== Stop hook: live model from transcript updates stale model stamp =="
 # Stamp Opus 1M, but transcript says haiku-4-5 (200K). At 50k tokens that's 25% of 200K
 # which should trigger at 5% budget. With the stale 1M stamp it would be 5% -> borderline.
 printf 'model: claude-opus-4-8[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
-printf 'context_budget_pct: 5\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 5\ncontext_budget_mode: snapshot\n' > "$TMP/.reload/config"
 # Transcript with model field on assistant turn
 printf '{"message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing"
@@ -276,7 +288,7 @@ printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/confi
 mktx 500000   # 50% >= 45%
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
-ck "notify emits a /checkpoint nudge" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"/checkpoint\")" >/dev/null'
+ck "notify emits a /snapshot nudge" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"/snapshot\")" >/dev/null'
 ck "notify never blocks" 'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null'
 ck "notify writes no summarizing marker" '[ ! -f "$TMP/.reload/summarizing" ]'
 ck "notify does not arm by itself" '[ ! -f "$TMP/.reload/pending" ]'
@@ -297,10 +309,10 @@ ck "under budget -> silent" '[ -z "$OUT" ]'
 ck "under budget -> ladder cleared" '[ ! -f "$TMP/.reload/notified" ]'
 
 echo "== Stop checkpoint mode: armed reload suppresses re-block -> laddered reminder =="
-# Once pass 2 (or a manual /checkpoint) armed the reload, further over-budget
+# Once pass 2 (or a manual /snapshot) armed the reload, further over-budget
 # Stops must NOT force another checkpoint turn — that re-blocked every second
 # turn until the user /clear'd (audit F01).
-printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\ncontext_window: 1000000\n' > "$TMP/.reload/config"
 mktx 500000
 rm -f "$TMP/.reload/summarizing" "$TMP/.reload/notified"; touch "$TMP/.reload/pending"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"

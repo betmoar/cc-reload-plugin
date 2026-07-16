@@ -52,7 +52,7 @@ echo "== E2E cycle 1: checkpoint mode → pass1 block → digest authored → pa
 # Session A boots: stamp the model+window so Stop can compute a real %.
 run sessionstart-hook.sh '{"session_id":"SESS-A","source":"startup","model":"claude-opus-4-8"}' >/dev/null
 ck "1.0 session A stamped a 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
-printf 'context_budget_pct: 45\ncontext_budget_mode: checkpoint\n' > "$TMP/.reload/config"
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\n' > "$TMP/.reload/config"
 rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/session.md"
 
 # Occupancy crosses budget (50% ≥ 45%): pass 1 must block and demand a digest.
@@ -117,19 +117,19 @@ ck "4.1 stale digest still arms (floor)" '[ -f "$TMP/.reload/pending" ]'
 ck "4.2 stale save is flagged honestly"  'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT refresh\")" >/dev/null'
 ck "4.3 handshake cleared"               '[ ! -f "$TMP/.reload/summarizing" ]'
 
-# ── CYCLE 5: notify-first (DEFAULT mode) — nudge, manual /checkpoint, /clear rehydrate ──
-echo "== E2E cycle 5: notify default → nudge only → manual /checkpoint → /clear rehydrate =="
+# ── CYCLE 5: notify-first (DEFAULT mode) — nudge, manual /snapshot, /clear rehydrate ──
+echo "== E2E cycle 5: notify default → nudge only → manual /snapshot → /clear rehydrate =="
 printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"   # no mode key -> notify default
 rm -f "$TMP/.reload/pending" "$TMP/.reload/notified" "$TMP/.reload/summarizing"
 mktx 500000   # 50% >= 45%
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
-ck "5.1 nudge names /checkpoint + the %"   'printf "%s" "$OUT" | jq -e "(.systemMessage|test(\"/checkpoint\")) and (.systemMessage|test(\"50%\"))" >/dev/null'
+ck "5.1 nudge names /snapshot + the %"   'printf "%s" "$OUT" | jq -e "(.systemMessage|test(\"/snapshot\")) and (.systemMessage|test(\"50%\"))" >/dev/null'
 ck "5.2 no block on the nudge"             'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null'
 ck "5.3 no handshake marker in notify"     '[ ! -f "$TMP/.reload/summarizing" ]'
 ck "5.4 nothing armed by the nudge"        '[ ! -f "$TMP/.reload/pending" ]'
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "5.5 next turn same occupancy -> silent" '[ -z "$OUT" ]'
-# The user answers the nudge with /checkpoint: the command writes the digest and arms.
+# The user answers the nudge with /snapshot: the command writes the digest and arms.
 cat > "$TMP/.reload/session.md" <<'EOF'
 ---
 session_id: "SESS-N"

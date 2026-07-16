@@ -11,7 +11,7 @@
 # Usage:
 #   reload-config.sh get <key>                       # prints value; '' if unset
 #   reload-config.sh set context_budget_pct  <0-95 | off>
-#   reload-config.sh set context_budget_mode <notify | checkpoint>
+#   reload-config.sh set context_budget_mode <notify | snapshot>   (legacy: checkpoint -> snapshot)
 #   reload-config.sh set context_window      <tokens >= 1000>
 #
 # Exit: 0 ok; 2 usage/validation error (message on stderr, config untouched).
@@ -42,12 +42,15 @@ case "$KEY" in
   context_budget_pct)
     [ "$VAL" = "off" ] && VAL=0
     { [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -le 95 ]; } \
-      || die "context_budget_pct must be 0-95 or 'off' (got '$VAL'); 0 disables the proactive checkpoint"
+      || die "context_budget_pct must be 0-95 or 'off' (got '$VAL'); 0 disables the proactive snapshot"
     ;;
   context_budget_mode)
+    # `checkpoint` is the pre-0.2.0 name for `snapshot`; accept it and normalize
+    # so old muscle-memory / configs keep working but the file stores the new value.
+    [ "$VAL" = "checkpoint" ] && VAL=snapshot
     case "$VAL" in
-      notify|checkpoint) ;;
-      *) die "context_budget_mode must be 'notify' (default: nudge only, never blocks) or 'checkpoint' (automated snapshot turn) — got '$VAL'" ;;
+      notify|snapshot) ;;
+      *) die "context_budget_mode must be 'notify' (default: nudge only, never blocks) or 'snapshot' (automated digest turn) — got '$VAL'" ;;
     esac
     ;;
   context_window)
