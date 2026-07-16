@@ -17,6 +17,7 @@ RELOAD_DIR="$PROJECT_DIR/.reload"
 DIGEST="$RELOAD_DIR/session.md"
 PENDING="$RELOAD_DIR/pending"          # arming marker: rehydrate on next SessionStart
 SUMMARIZING="$RELOAD_DIR/summarizing"  # transient: budget snapshot turn in progress
+NOTIFIED="$RELOAD_DIR/notified"        # notify ladder: last occupancy % a budget notice fired at
 CONFIG="$RELOAD_DIR/config"
 MODELFILE="$RELOAD_DIR/model"          # model id + resolved window, stamped by SessionStart
 

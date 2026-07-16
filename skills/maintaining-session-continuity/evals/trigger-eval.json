@@ -1,0 +1,22 @@
+[
+  {"query": "this session's been going for hours and I'm worried I'll lose the thread when it compacts — how do I pick back up?", "should_trigger": true},
+  {"query": "before I run /clear can I save where I'm at? mid-refactor on the auth module, don't want to re-explain everything", "should_trigger": true},
+  {"query": "what's the .reload/session.md file for? it showed up in my repo", "should_trigger": true},
+  {"query": "context's getting full lol. whats the move so i dont lose my place", "should_trigger": true},
+  {"query": "claude keeps forgetting decisions we made earlier, the context rot is real. way to checkpoint?", "should_trigger": true},
+  {"query": "I want to /compact but keep my working state — walk me through the cc-reload flow", "should_trigger": true},
+  {"query": "how does the snapshot to arm to rehydrate thing work in cc-reload", "should_trigger": true},
+  {"query": "set up a session digest before I hit auto-compaction on this long debugging session", "should_trigger": true},
+  {"query": "we're at ~80% context on this 1M window, should I checkpoint and clear or keep going?", "should_trigger": true},
+  {"query": "closing out mid-task for the day — how do I make tomorrow's session rehydrate from where I left off", "should_trigger": true},
+  {"query": "my repete loop is running and I want it to continue after this context clear — how do I resume it", "should_trigger": false},
+  {"query": "compact my git history with a rebase, squash the last 5 commits", "should_trigger": false},
+  {"query": "how do I reduce MCP tool context usage, it's eating 13k tokens", "should_trigger": false},
+  {"query": "my jupyter kernel keeps losing state between cells", "should_trigger": false},
+  {"query": "set up a DB session pool that survives reconnects", "should_trigger": false},
+  {"query": "reload the plugins after I edited the hook", "should_trigger": false},
+  {"query": "commit my staged changes with a good message before I switch branches", "should_trigger": false},
+  {"query": "context window's filling up, switch me to a model with a bigger window", "should_trigger": false},
+  {"query": "write a summary of this module for the README", "should_trigger": false},
+  {"query": "the model is hallucinating file paths that don't exist in the repo", "should_trigger": false}
+]

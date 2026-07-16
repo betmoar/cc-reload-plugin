@@ -30,7 +30,7 @@ if [ ! -f "$DIGEST" ]; then
       "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '## Done this stretch\n(unknown — auto-compaction fired before a digest was written)\n\n'
     printf '## In flight\n(unknown)\n\n'
-    printf '## Next concrete step\nRe-derive state from the repo and recent git history, then run /checkpoint to start tracking again.\n\n'
+    printf '## Next concrete step\nRe-derive state from the repo and recent git history, then run /snapshot to start tracking again.\n\n'
     printf '## Open questions & risks\nThis digest is a fallback; trust files and commits over it.\n'
   } > "$DIGEST"
 fi

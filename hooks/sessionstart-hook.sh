@@ -20,6 +20,17 @@ if [ -n "$MODEL" ]; then
   printf 'model: %s\nwindow: %s\n' "$MODEL" "$(model_window "$MODEL")" > "$MODELFILE"
 fi
 
+# Marker hygiene on a genuine context reset (NOT resume — a resumed session keeps
+# its context, so a mid-flight snapshot handshake may legitimately complete and
+# the notify ladder still reflects real occupancy):
+#   - a leaked `summarizing` (pass 1 blocked, user interrupted the snapshot turn,
+#     then /clear'd) must not survive into the fresh session, where the first Stop
+#     would run pass 2 and arm a dead session's digest with a misleading warning.
+#   - the notify ladder resets so the next budget crossing announces itself.
+case "$SOURCE" in
+  startup|clear|compact) rm -f "$SUMMARIZING" "$NOTIFIED" 2>/dev/null ;;
+esac
+
 # Only rehydrate when armed. The one-shot .reload/pending marker — written next to
 # the digest by THIS project's own Stop/PreCompact hook — is the sole gate. We do
 # NOT also gate on session id: /clear (and resume) mint a fresh session id every

@@ -1,0 +1,16 @@
+{
+  "name": "cc-reload-plugin",
+  "owner": {
+    "name": "betmoar"
+  },
+  "metadata": {
+    "description": "Marketplace for the cc-reload plugin. The plugin lives at the repo root; this file exists so `/plugin marketplace add` works on a local checkout or the GitHub repo, as a fallback to installing from a central marketplace."
+  },
+  "plugins": [
+    {
+      "name": "cc-reload",
+      "source": "./",
+      "description": "Session continuity across context resets for Claude Code. Snapshots a session digest before /clear, /compact, or auto-compaction and auto-rehydrates it after. The non-looped companion to cc-repete — stands down whenever a cc-repete loop is active."
+    }
+  ]
+}
