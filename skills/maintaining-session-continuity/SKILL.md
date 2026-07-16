@@ -1,13 +1,16 @@
 ---
 name: maintaining-session-continuity
 description: >-
-  Keep an ordinary (non-looped) Claude Code session resumable across a context reset — write and
-  refresh the .reload/session.md digest, understand the snapshot -> arm -> rehydrate cycle, and the
-  /clear, /compact, auto-compaction paths. Use whenever a session is getting long, before a /clear
-  or /compact, when context-rot shows (the agent forgetting earlier decisions), or when the user
-  mentions cc-reload, session reload/rehydrate, a ".reload/" directory, a session digest, or losing
-  context on compaction — even if they don't name the plugin. NOT for autonomous loops: if a
-  cc-repete loop is active, that tool owns continuity and cc-reload stands down.
+  Use for continuity of a plain (non-looped) Claude Code session across a context reset — both to
+  *do* it and to *explain how it works*. Covers cc-reload's snapshot → arm → rehydrate cycle:
+  writing/refreshing the `.reload/session.md` digest, arming reload, and rehydrating after `/clear`,
+  `/compact`, or auto-compaction. Trigger when the user wants to save where they are before
+  clearing/compacting, hand off mid-task so a later session resumes, hold working state as context
+  fills, OR asks how any part of that mechanism works, or names cc-reload, `.reload/`, checkpoint,
+  rehydrate, or a session digest. This is about carrying the conversation's own progress forward —
+  not fixing the model's outputs. Do NOT use for debugging wrong or hallucinated results (bad paths,
+  made-up APIs), summarizing code into docs, git squash/rebase, or switching to a larger-window
+  model. Stand down while a cc-repete autonomous loop is active — that tool owns continuity there.
 ---
 
 # Maintaining session continuity
