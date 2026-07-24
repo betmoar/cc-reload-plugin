@@ -106,11 +106,31 @@ fi
 # detected. The last assistant turn carries the model id that actually ran —
 # if it differs from the stamped value, rewrite both model and window so this
 # and all future turns compute occupancy against the right window.
+#
+# EXCEPT: the transcript id is LOSSY w.r.t. the "[1m]" alias. A session
+# configured as e.g. `claude-sonnet-4-5[1m]` (or the alias form `sonnet[1m]`)
+# runs with a 1M window, but message.model carries only the bare API id
+# (`claude-sonnet-4-5-…`), which model_window() maps to the 200K base — so a
+# naive restamp would downgrade the window 5x and nag from ~9% real occupancy.
+# If the stamped model is a "[1m]" form of the SAME model (its base name
+# appears in the live id), keep the stamp; a genuine /model switch to a
+# different family still restamps because the base no longer matches.
 if [ -n "$LIVE_MODEL" ]; then
   STAMPED_MODEL="$(kv model "$MODELFILE")"
   if [ "$LIVE_MODEL" != "$STAMPED_MODEL" ]; then
-    ensure_reload_dir
-    printf 'model: %s\nwindow: %s\n' "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")" > "$MODELFILE"
+    RESTAMP=1
+    case "$STAMPED_MODEL" in
+      *"[1m]"*)
+        BASE="${STAMPED_MODEL%%\[*}"   # claude-sonnet-4-5[1m] -> claude-sonnet-4-5; sonnet[1m] -> sonnet
+        if [ -n "$BASE" ]; then
+          case "$LIVE_MODEL" in *"$BASE"*) RESTAMP="" ;; esac
+        fi
+        ;;
+    esac
+    if [ -n "$RESTAMP" ]; then
+      ensure_reload_dir
+      printf 'model: %s\nwindow: %s\n' "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")" > "$MODELFILE"
+    fi
   fi
 fi
 

@@ -283,6 +283,36 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "live model refreshes stamp to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
 ck "50k/200K=25% > 5% budget -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
 
+echo "== Stop hook: [1m] stamp survives a bare-id transcript refresh (same model) =="
+# The transcript never carries the "[1m]" alias suffix. A session stamped
+# claude-sonnet-4-5[1m] (1M) whose transcript says claude-sonnet-4-5-20250929
+# is the SAME model — restamping the bare id would downgrade the window to the
+# 200K base and nag at 5x the real occupancy (audit F05).
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"
+printf '{"message":{"role":"assistant","model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":100000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "[1m] stamp keeps 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+ck "[1m] stamp not overwritten by bare id" 'grep -q "claude-sonnet-4-5\[1m\]" "$TMP/.reload/model"'
+ck "100k/1M=10% < 45% -> silent (no false nudge)" '[ -z "$OUT" ]'
+
+echo "== Stop hook: alias-form [1m] stamp (sonnet[1m]) also survives =="
+printf 'model: sonnet[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "alias sonnet[1m] keeps 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+ck "alias form stays silent under real budget" '[ -z "$OUT" ]'
+
+echo "== Stop hook: [1m] stamp does NOT shield a genuine family switch =="
+# sonnet[1m] stamped, but the live turn ran haiku (a real /model switch):
+# the base "sonnet" is absent from the live id, so the restamp proceeds -> 200K.
+printf 'model: sonnet[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf '{"message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":100000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "family switch from [1m] stamp restamps to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
+ck "100k/200K=50% >= 45% -> notifies" 'printf "%s" "$OUT" | jq -e ".systemMessage != null" >/dev/null'
+
 echo "== Stop notify (DEFAULT mode): over budget -> nudge only, never blocks, no handshake =="
 printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/config"   # no mode key -> notify
 mktx 500000   # 50% >= 45%

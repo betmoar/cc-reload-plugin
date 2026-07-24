@@ -65,8 +65,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
    occupancy — far worse than snapshotting a small session late (PreCompact still backstops it).
    Same reason the >200K-observed-usage self-heal only ever *raises* the window. A **valid**
    `context_window` override pins everything; an *invalid* one (0, garbage) must behave exactly
-   like no override — it feeds a division and gates the self-heal. (Tests: "window UNKNOWN…",
-   "context_window: 0 …", "auto-corrects upward…")
+   like no override — it feeds a division and gates the self-heal. The transcript's `message.model`
+   is **lossy w.r.t. `[1m]` aliases** (bare API id only): the Stop-hook refresh must never restamp a
+   `[1m]`-stamped model with its own bare id — that downgrades a 1M-beta session to its 200K base
+   and nags at ~9% real occupancy (audit F05). A genuine family switch (base name absent from the
+   live id) still restamps. (Tests: "window UNKNOWN…", "context_window: 0 …", "auto-corrects
+   upward…", "[1m] stamp survives…", "does NOT shield a genuine family switch")
 6. **Model-id matching is boundary-anchored.** `*opus-4-1|*opus-4-1-*` — never a bare `*opus-4-1*`,
    which would misclassify a future `opus-4-10` as 200K. (Tests: "future opus-4-10…")
 7. **`.reload/` never gets committed to the user's project.** `ensure_reload_dir` drops a
