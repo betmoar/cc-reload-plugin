@@ -49,6 +49,12 @@ All notable changes to cc-reload are documented here. The format follows
   courtesy path did warn: exactly backwards. The warning is now wrapped in `{systemMessage}` via
   `jq -n --arg`. No `permissionDecision` is emitted — an explicit `allow` would skip the user's own
   permission prompt, and a guard that quietly widens permissions is not a guard.
+- **The `[1m]` restamp shield is boundary-anchored.** It tested whether the stamped model's base
+  name appeared anywhere in the live id, so `claude-sonnet-4-5[1m]` would shield a future
+  `claude-sonnet-4-50` — pinning a stale stamp and its window indefinitely, the mirror image of the
+  F05 downgrade the shield exists to prevent. Now anchored on end-of-id or a literal `-`, the same
+  rule `model_window()` already follows (invariant 6). The alias form (`sonnet[1m]`, which matches
+  mid-id) is unaffected.
 - **An unterminated frontmatter fence is no longer treated as frontmatter running to EOF.**
   `digest_owner()` stopped at the closing `---` but had no rule for a fence that never closes, and
   `claim_digest()` gated only on line 1. On a digest whose closing fence went missing — a model

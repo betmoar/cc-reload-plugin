@@ -309,6 +309,19 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "alias sonnet[1m] keeps 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 ck "alias form stays silent under real budget" '[ -z "$OUT" ]'
 
+echo "== Stop hook: the [1m] shield is boundary-anchored (invariant 6, applied to BASE) =="
+# claude-sonnet-4-5 is a literal PREFIX of a future claude-sonnet-4-50, so an
+# unanchored substring test shields a genuinely different model and pins the
+# stale [1m] stamp forever. Same collision shape invariant 6 already forbids in
+# model_window() ("future opus-4-10"), one level up. The boundary is "-": the
+# base must end at the id's end or at a literal dash.
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf '{"message":{"role":"assistant","model":"claude-sonnet-4-50-20260101","usage":{"input_tokens":100000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/notified"
+run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" >/dev/null
+ck "sonnet-4-50 is NOT shielded by a sonnet-4-5[1m] stamp" 'grep -q "claude-sonnet-4-50-20260101" "$TMP/.reload/model"'
+ck "the stale [1m] stamp is replaced, not pinned" '! grep -q "\[1m\]" "$TMP/.reload/model"'
+
 echo "== Stop hook: [1m] stamp does NOT shield a genuine family switch =="
 # sonnet[1m] stamped, but the live turn ran haiku (a real /model switch):
 # the base "sonnet" is absent from the live id, so the restamp proceeds -> 200K.

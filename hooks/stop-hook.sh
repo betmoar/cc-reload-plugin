@@ -134,6 +134,16 @@ fi
 # If the stamped model is a "[1m]" form of the SAME model (its base name
 # appears in the live id), keep the stamp; a genuine /model switch to a
 # different family still restamps because the base no longer matches.
+#
+# The base match is BOUNDARY-ANCHORED, for the reason invariant 6 anchors
+# model_window(): claude-sonnet-4-5 is a literal prefix of a future
+# claude-sonnet-4-50, and a bare *"$BASE"* would shield that genuinely
+# different model — pinning a stale [1m] stamp and its window forever, the
+# mirror image of the F05 downgrade this shield exists to prevent. A model id
+# segment ends at the id's end or at a "-", so both forms the stamp can take
+# are covered: a full id (claude-sonnet-4-5, a PREFIX of the live id) and an
+# alias (sonnet, which appears MID-id in claude-sonnet-4-5-…). Hence the
+# leading *"$BASE" rather than an exact prefix match.
 if [ -n "$LIVE_MODEL" ]; then
   STAMPED_MODEL="$(kv model "$MODELFILE")"
   if [ "$LIVE_MODEL" != "$STAMPED_MODEL" ]; then
@@ -142,7 +152,7 @@ if [ -n "$LIVE_MODEL" ]; then
       *"[1m]"*)
         BASE="${STAMPED_MODEL%%\[*}"   # claude-sonnet-4-5[1m] -> claude-sonnet-4-5; sonnet[1m] -> sonnet
         if [ -n "$BASE" ]; then
-          case "$LIVE_MODEL" in *"$BASE"*) RESTAMP="" ;; esac
+          case "$LIVE_MODEL" in *"$BASE"|*"$BASE"-*) RESTAMP="" ;; esac
         fi
         ;;
     esac
