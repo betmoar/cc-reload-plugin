@@ -48,6 +48,44 @@ kv() {
 }
 cfg() { kv "$1" "$CONFIG"; }
 
+# --- concurrent-session ownership (see docs/spec/concurrent-sessions.md §4.2) ---
+#
+# Identity lives IN the artifact, never in a shared marker beside it: a
+# directory-global owner file is overwritten by whichever session starts last,
+# so it identifies neither the incumbent nor the writer — the same defect as the
+# unowned digest it would be guarding (spec §4.2.1, rejected alternative).
+
+OWNER_WINDOW_DEFAULT=14400   # 4h, in seconds
+
+# The digest's stamped owner, or "" when absent/empty/un-parseable. An empty
+# result means UNDETECTABLE, not "safe" — callers proceed silently (fail-open).
+#
+# NOT kv(): that greps ^session_id: anywhere in the file, and a digest BODY is
+# model-written and untrusted (invariant 8) — an "Open questions" bullet reading
+# `session_id: whatever` would be picked up as the owner. Scope to the YAML
+# frontmatter: start at the opening ---, stop at the closing one. One awk pass.
+digest_owner() {
+  [ -f "$DIGEST" ] || return 0
+  awk '
+    NR==1 && $0 != "---" { exit }          # no frontmatter at all
+    NR>1 && $0 == "---"  { exit }          # closing fence: stop before the body
+    /^session_id:/ {
+      sub(/^session_id:[[:space:]]*/, "")
+      sub(/[[:space:]]+$/, "")
+      gsub(/^"|"$/, "")
+      print; exit
+    }
+  ' "$DIGEST" 2>/dev/null
+}
+
+# Freshness window in seconds. A non-negative integer in config wins; anything
+# else (unset, garbage, negative) falls back to the default. 0 disables the
+# check entirely, matching the context_budget_pct: 0 convention.
+owner_window() {
+  local w; w="$(cfg context_owner_window)"
+  [[ "$w" =~ ^[0-9]+$ ]] && printf '%s' "$w" || printf '%s' "$OWNER_WINDOW_DEFAULT"
+}
+
 # Resolve a model id to its context window in tokens. Current-generation
 # main-session models — Opus 4.6/4.7/4.8, Sonnet 4.6, the 5-series (Fable/Mythos/
 # Sonnet 5/Opus 5), and any "[1m]" id — ship a 1M window at standard pricing.
