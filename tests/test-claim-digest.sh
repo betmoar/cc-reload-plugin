@@ -232,11 +232,28 @@ ck "a non-numeric mtime stands the guard down" \
 # Behavioral half: shadow `stat` with GNU semantics and prove the side-file still
 # happens. Without this, the greps above pass against any reordering that still
 # breaks. Skipped where the fixture cannot be made executable.
+#
+# The fixture must NOT call `stat` by name — PATH is shadowed, so that recurses —
+# and must not hardcode a format flag either: the first version delegated to
+# `/usr/bin/stat -f %m`, which is correct on macOS and is GNU's --file-system on
+# Linux, so the fixture reproduced the exact partial-success garbage it exists to
+# simulate and failed on the platform the bug came from. Resolve the REAL stat and
+# the flag that actually works HERE, then bake both in.
+REAL_STAT=""
+for c in /usr/bin/stat /bin/stat; do [ -x "$c" ] && { REAL_STAT="$c"; break; }; done
+REAL_FLAGS=""
+if [ -n "$REAL_STAT" ]; then
+  if [ -n "$("$REAL_STAT" -c %Y "$0" 2>/dev/null | tr -cd '0-9')" ]; then REAL_FLAGS="-c %Y"    # GNU
+  elif [ -n "$("$REAL_STAT" -f %m "$0" 2>/dev/null | tr -cd '0-9')" ]; then REAL_FLAGS="-f %m"  # BSD
+  fi
+fi
 GNUSIM="$TMP/gnusim"; mkdir -p "$GNUSIM"
-cat > "$GNUSIM/stat" <<'GNUEOF'
-#!/usr/bin/env bash
-# GNU coreutils semantics: -f is --file-system, NOT a format flag.
-set -u
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# GNU coreutils semantics: -f is --file-system, NOT a format flag.\n'
+  printf 'set -u\n'
+  printf 'REAL_STAT=%s\nREAL_FLAGS="%s"\n' "$REAL_STAT" "$REAL_FLAGS"
+  cat <<'GNUEOF'
 if [ "${1:-}" = "-f" ]; then
   shift; rc=0
   for f in "$@"; do
@@ -249,19 +266,25 @@ if [ "${1:-}" = "-c" ]; then
   fmt="$2"; shift 2
   for f in "$@"; do
     [ -e "$f" ] || { printf 'stat: cannot statx\n' >&2; exit 1; }
-    case "$fmt" in %Y) /usr/bin/stat -f %m "$f" 2>/dev/null || /bin/stat -c %Y "$f" ;; *) printf '%s\n' "$fmt" ;; esac
+    case "$fmt" in
+      %Y) # shellcheck disable=SC2086  # REAL_FLAGS is two words on purpose
+          $REAL_STAT $REAL_FLAGS "$f" ;;
+      *)  printf '%s\n' "$fmt" ;;
+    esac
   done
   exit 0
 fi
-exec /usr/bin/stat "$@"
+# shellcheck disable=SC2086
+exec $REAL_STAT "$@"
 GNUEOF
-if chmod +x "$GNUSIM/stat" 2>/dev/null; then
+} > "$GNUSIM/stat"
+if [ -n "$REAL_FLAGS" ] && chmod +x "$GNUSIM/stat" 2>/dev/null; then
   reset_reload; fresh_digest S_A
   PATH="$GNUSIM:$PATH" claim S_B >/dev/null 2>&1
   ck "side-files under GNU stat semantics too" '[ -f "$TMP/.reload/session.S_A.md" ]'
   reset_reload
 else
-  echo "  SKIP: cannot chmod +x the stat fixture — behavioral half not run"
+  echo "  SKIP: no usable real stat, or cannot chmod +x the fixture — behavioral half not run"
 fi
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
