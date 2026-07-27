@@ -41,7 +41,8 @@ WINDOW="$(owner_window)"
 
 # Recency from FILESYSTEM MTIME, not the frontmatter updated_at: mtime is
 # written by the OS, updated_at by a model that may omit or staledate it. The
-# precedent is stop-hook.sh:50 (`-nt`).
+# precedent is the pass-2 freshness check in stop-hook.sh (`$DIGEST -nt
+# $SUMMARIZING`).
 #
 # GNU FIRST, and the result VALIDATED — order and validation both matter:
 #   * BSD/macOS: -f is the format flag, so `stat -f %m FILE` prints the mtime.

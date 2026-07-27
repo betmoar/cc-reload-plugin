@@ -244,7 +244,11 @@ Since 0.3 the plugin detects a cross-session overwrite rather than losing the di
 that guard has known limits:
 
 - A digest written without a runtime session id is un-owned and overwritten silently.
-- The guard sits on `Write`/`Edit`; a digest written via a `Bash` heredoc bypasses it.
+- The guard sits on `Write`/`Edit` — the only built-in tools that can write the digest (Claude
+  Code's `PreToolUse` matches `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Agent`, `WebFetch`,
+  `WebSearch`, `AskUserQuestion`, `ExitPlanMode`, plus MCP tools; `NotebookEdit` takes a
+  `notebook_path` and cannot target the digest). A digest written via a `Bash` heredoc still
+  bypasses it.
 - Recovery is manual — the side-file is never consulted on rehydrate; copy it back yourself.
 - Only `pending` carries an owner. `summarizing`, `notified`, and `model` remain shared.
 - This is a detector, not isolation. Separate worktrees are the actual fix.

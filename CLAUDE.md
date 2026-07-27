@@ -118,9 +118,9 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     **claims** the digest it rehydrates (rewrites frontmatter `session_id` to its own id —
     frontmatter-scoped, atomic, silent on failure), and the arm warning fires on **incoherence**
     (`ARM_OWNER != DIGEST_OWNER`), which cannot arise from one session. Before adding any new id
-    comparison, state which side rotates across a reset. (Tests: "ordinary /clear is silent",
-    "second cycle stays silent", "incoherent arm warns" (`tests/test-hooks.sh`); e2e single-session
-    lifecycle cycle. Spec §4.2.3, corrected.)
+    comparison, state which side rotates across a reset. (Tests: "coherent arm warns nothing",
+    "second clear also silent (false positive does not reappear)", "incoherent arm warns"
+    (`tests/test-hooks.sh`); e2e single-session lifecycle cycle. Spec §4.2.3, corrected.)
 
 ## Non-obvious decisions and rejected alternatives
 

@@ -466,6 +466,20 @@ ck "unterminated fence: no claim stamp injected" '! grep -qF "session_id: \"S_NE
 ck "unterminated fence: body id never named as digest owner" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT-THE-OWNER\")" >/dev/null'
 ck "unterminated fence still rehydrates (fail-open, invariant 3)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext != null" >/dev/null'
 
+echo "== CLAUDE.md's invariant-13 test citations actually resolve =="
+# The invariant list's own convention is "each has a named test", i.e. the
+# quoted strings must be greppable. They were paraphrases and matched nothing,
+# so anyone auditing invariant 13 found no guard where the doc promised three.
+C="$(cd "$H/.." && pwd)/CLAUDE.md"
+SUITE="${BASH_SOURCE[0]}"
+# Each citation must appear BOTH in CLAUDE.md and as a real label in this file.
+# No loop with `exit` — ck runs its argument under eval, so a bare exit would
+# kill the suite instead of failing the assertion.
+cited(){ grep -qF "$1" "$C" && grep -qF "ck \"$1" "$SUITE"; }
+ck "invariant 13 cites a real label: coherent arm warns nothing" 'cited "coherent arm warns nothing"'
+ck "invariant 13 cites a real label: second clear also silent" 'cited "second clear also silent"'
+ck "invariant 13 cites a real label: incoherent arm warns" 'cited "incoherent arm warns"'
+
 echo "== Structural guard: no id-equality condition governs an exit (v0.1.5) =="
 # Spec criterion 3's second prong. The behavioral tests above prove rehydration
 # happens on the inputs we thought to try; this proves nobody re-introduced the

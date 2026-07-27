@@ -19,6 +19,13 @@ HOOK_INPUT="$(cat)"
 
 # matcher filters on TOOL NAME only, so path scoping happens here. Anything that
 # is not a write to OUR digest is none of our business — leave silently.
+#
+# Write|Edit is the complete set of built-in tools that can write the digest.
+# The matcher is alphanumerics-and-| , so Claude Code takes the EXACT-STRING
+# path, not the unanchored-regex one — it matches those two names and nothing
+# else. NotebookEdit is not matchable on PreToolUse, carries notebook_path
+# rather than file_path (the read below would yield "" and exit 0), and cannot
+# target a .md file anyway. A Bash heredoc remains the documented bypass.
 FILE="$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null)" || exit 0
 [ -n "$FILE" ] || exit 0
 
