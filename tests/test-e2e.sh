@@ -164,4 +164,77 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "6.3 first Stop of fresh session is silent (no phantom pass 2)" '[ -z "$OUT" ]'
 ck "6.4 nothing armed in the fresh session"  '[ ! -f "$TMP/.reload/pending" ]'
 
+# ── CYCLE 7: two sessions, one tree — collision is loud, rehydrate still works ──
+echo "== E2E cycle 7: session B clobbers session A's digest -> side-filed + warned =="
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+
+# Session A snapshots (simulating what /snapshot writes, with a runtime id).
+cat > "$TMP/.reload/session.md" <<'EOF'
+---
+session_id: "SESS-A"
+updated_at: "2026-07-27T10:00:00Z"
+intent: "session A axes 3+4 spec work"
+---
+## Done this stretch
+- MAGIC-A-DONE drafted the ownership section
+## In flight
+- MAGIC-A-INFLIGHT reviewing the arm semantics
+## Next concrete step
+MAGIC-A-NEXT finish the acceptance criteria
+## Open questions & risks
+- none
+EOF
+
+# Session B is about to Write the same path. The PreToolUse hook fires FIRST.
+OUT="$(printf '%s' "{\"session_id\":\"SESS-B\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" \
+  | CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/pretooluse-hook.sh")"
+ck "7.1 A's digest was side-filed" '[ -f "$TMP/.reload/session.SESS-A.md" ]'
+ck "7.2 side-file holds A's working thread" 'grep -q "MAGIC-A-NEXT" "$TMP/.reload/session.SESS-A.md"'
+ck "7.3 B was warned, naming A" 'printf "%s" "$OUT" | grep -q "SESS-A"'
+
+# B's write then lands (the hook permitted it).
+cat > "$TMP/.reload/session.md" <<'EOF'
+---
+session_id: "SESS-B"
+updated_at: "2026-07-27T10:30:00Z"
+intent: "session B implementing the guard"
+---
+## Done this stretch
+- MAGIC-B-DONE wrote claim-digest.sh
+## In flight
+- MAGIC-B-INFLIGHT wiring the PreToolUse hook
+## Next concrete step
+MAGIC-B-NEXT run the e2e suite
+## Open questions & risks
+- none
+EOF
+ck "7.4 B's write succeeded" 'grep -q "MAGIC-B-NEXT" "$TMP/.reload/session.md"'
+ck "7.5 A's copy survives alongside it" 'grep -q "MAGIC-A-NEXT" "$TMP/.reload/session.SESS-A.md"'
+
+# B arms and clears: rehydrates B's own thread, no warning.
+run precompact-hook.sh '{"session_id":"SESS-B","trigger":"manual"}' >/dev/null
+OUT="$(run sessionstart-hook.sh '{"session_id":"SESS-B","source":"clear"}')"
+ck "7.6 B rehydrates its own thread" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-B-NEXT\")" >/dev/null'
+ck "7.7 own arm -> no cross-session warning" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+
+# Now A clears against B's arm: STILL rehydrates (invariant), but is warned.
+printf 'SESS-A' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"SESS-B","source":"clear"}')"
+ck "7.8 foreign arm STILL rehydrates (v0.1.5 regression guard)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-B-NEXT\")" >/dev/null'
+ck "7.9 foreign arm warns" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+
+echo "== E2E cycle 8: two project dirs are fully isolated =="
+# NOTE: this REPLACES the file's existing `trap 'rm -rf "$TMP"' EXIT` (test-e2e.sh:14).
+# The replacement still cleans $TMP, so nothing leaks — but if you add a $TMP_C later,
+# it must go in this same trap, not a third one.
+TMP_B="$(mktemp -d)"; trap 'rm -rf "$TMP" "$TMP_B"' EXIT
+mkdir -p "$TMP_B/.reload"
+printf -- '---\nsession_id: "OTHER"\nupdated_at: "x"\nintent: "other tree"\n---\n## Next concrete step\nMAGIC-OTHER-NEXT\n' > "$TMP_B/.reload/session.md"
+printf 'OTHER' > "$TMP_B/.reload/pending"
+OUT="$(printf '%s' '{"session_id":"OTHER","source":"clear"}' \
+  | CLAUDE_PROJECT_DIR="$TMP_B" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/sessionstart-hook.sh")"
+ck "8.1 tree B rehydrates its own digest" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-OTHER-NEXT\")" >/dev/null'
+ck "8.2 tree A is untouched by tree B" 'grep -q "MAGIC-B-NEXT" "$TMP/.reload/session.md"'
+ck "8.3 tree B never saw tree A's side-file" '[ ! -f "$TMP_B/.reload/session.SESS-A.md" ]'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
