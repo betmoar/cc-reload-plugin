@@ -32,7 +32,29 @@ All notable changes to cc-reload are documented here. The format follows
   bypasses the `Write`/`Edit` guard, recovery from a side-file is manual, and only `pending` carries
   an owner. This is a detector, not isolation — separate worktrees remain the actual fix.
 
+### Changed
+- **Leaner always-loaded context.** The skill description — billed on every session of every user —
+  is roughly halved (~218 → ~122 tokens) by dropping a trigger-keyword dump and a four-item
+  NOT-list; the body loses a section that restated the cycle steps a second time (~1360 → ~877
+  tokens, billed on invoke). Following Anthropic's Claude 5 context-engineering guidance: simple
+  descriptions over repetition, and judgment over enumerated prohibitions. All twelve trigger terms
+  are retained; every operational instruction in the commands is unchanged.
+
 ### Fixed
+- **The enforced collision warning never reached the user.** The `PreToolUse` hook relayed
+  `claim-digest.sh`'s plain-text stdout, but Claude Code surfaces hook stdout in the transcript for
+  only three events — `UserPromptSubmit`, `UserPromptExpansion`, `SessionStart` — and writes it to
+  the debug log for everything else. So on the one path that *cannot* be skipped, the guard
+  side-filed the incumbent digest correctly and said nothing, while the skippable `/snapshot`
+  courtesy path did warn: exactly backwards. The warning is now wrapped in `{systemMessage}` via
+  `jq -n --arg`. No `permissionDecision` is emitted — an explicit `allow` would skip the user's own
+  permission prompt, and a guard that quietly widens permissions is not a guard.
+- **An unterminated frontmatter fence is no longer treated as frontmatter running to EOF.**
+  `digest_owner()` stopped at the closing `---` but had no rule for a fence that never closes, and
+  `claim_digest()` gated only on line 1. On a digest whose closing fence went missing — a model
+  writing under a line budget, or a truncated mid-write — the first *body* line matching
+  `^session_id:` was read as the owner (and named in the user-facing warning) **and rewritten in
+  place**, corrupting model-authored prose. Both now require a complete frontmatter region.
 - **The guard no longer fires on ordinary `/clear`.** Its first cut compared **session identity**,
   but `/clear` mints a fresh session id every time — so "the digest belongs to someone else" and
   "this arm isn't mine" were *always* true for a single user in a single directory. Caught by
