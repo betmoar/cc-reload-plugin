@@ -57,6 +57,23 @@ cfg() { kv "$1" "$CONFIG"; }
 
 OWNER_WINDOW_DEFAULT=14400   # 4h, in seconds
 
+# True only when the digest carries a COMPLETE frontmatter region: `---` on line
+# 1 and a closing `---` below it. An opener with no closer is not "frontmatter
+# running to EOF" — it is a digest with no frontmatter at all, and every line
+# after it is untrusted body (invariant 8). Treating it as frontmatter let a body
+# line reading `session_id: …` be read as the owner AND rewritten in place, which
+# is precisely the corruption the body-scoping exists to prevent. The digest is
+# model-written under a line budget, so a dropped closing fence or a truncated
+# mid-write is an ordinary failure, not a contrived one.
+frontmatter_closed() {
+  [ -f "$DIGEST" ] || return 1
+  awk '
+    NR==1 && $0 != "---" { exit 1 }        # no opener: no frontmatter
+    NR>1  && $0 == "---" { ok=1; exit }    # closer found
+    END { exit ok ? 0 : 1 }                # opened but never closed -> none
+  ' "$DIGEST" 2>/dev/null
+}
+
 # The digest's stamped owner, or "" when absent/empty/un-parseable. An empty
 # result means UNDETECTABLE, not "safe" — callers proceed silently (fail-open).
 #
@@ -66,6 +83,7 @@ OWNER_WINDOW_DEFAULT=14400   # 4h, in seconds
 # frontmatter: start at the opening ---, stop at the closing one. One awk pass.
 digest_owner() {
   [ -f "$DIGEST" ] || return 0
+  frontmatter_closed || return 0
   awk '
     NR==1 && $0 != "---" { exit }          # no frontmatter at all
     NR>1 && $0 == "---"  { exit }          # closing fence: stop before the body
@@ -98,8 +116,11 @@ claim_digest() {
   local new_id="$1"
   [ -n "$new_id" ] || return 0
   [ -f "$DIGEST" ] || return 0
-  # No frontmatter at all -> nothing to claim; leave the digest untouched.
-  [ "$(head -1 "$DIGEST" 2>/dev/null)" = "---" ] || return 0
+  # No COMPLETE frontmatter region -> nothing to claim; leave the digest
+  # untouched. head -1 alone accepted an unterminated fence, and the awk below
+  # then rewrote the first body line matching ^session_id: (see
+  # frontmatter_closed above).
+  frontmatter_closed || return 0
 
   local tmp="$DIGEST.claim.$$"
   if awk -v id="$new_id" '

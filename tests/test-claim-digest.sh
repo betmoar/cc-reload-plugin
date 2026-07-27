@@ -40,6 +40,18 @@ ck "no frontmatter reads empty" 'have_fn digest_owner && [ -z "$(libcall digest_
 printf -- '---\nsession_id: "S_A"\n---\n## Open questions\nsession_id: NOT-THE-OWNER\n' > "$TMP/.reload/session.md"
 ck "body line does NOT override frontmatter" '[ "$(libcall digest_owner)" = "S_A" ]'
 
+# An UNTERMINATED fence is not "frontmatter running to EOF" — it is a digest with
+# no frontmatter region at all, so every line after the opener is untrusted body.
+# The digest is model-written under a line budget: a dropped closing fence (or a
+# mid-write truncation) is a plausible real failure, and reading the body as
+# frontmatter hands an attacker-or-accident-controlled string to the owner check.
+printf -- '---\nintent: "no closing fence"\n## Open questions\nsession_id: NOT-THE-OWNER\n' > "$TMP/.reload/session.md"
+ck "unterminated fence does not leak a body session_id as owner" 'have_fn digest_owner && [ -z "$(libcall digest_owner)" ]'
+
+# The opener must be the FIRST line; a --- further down does not open frontmatter.
+printf -- '## Done\nsome prose\n---\nsession_id: NOT-THE-OWNER\n---\n' > "$TMP/.reload/session.md"
+ck "a --- below line 1 does not open a frontmatter region" 'have_fn digest_owner && [ -z "$(libcall digest_owner)" ]'
+
 rm -f "$TMP/.reload/session.md"
 ck "absent digest reads empty" 'have_fn digest_owner && [ -z "$(libcall digest_owner)" ]'
 

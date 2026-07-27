@@ -438,6 +438,21 @@ OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
 ck "frontmatter session_id claimed" 'grep -q "^session_id: \"S2\"" "$TMP/.reload/session.md"'
 ck "body's session_id: line survives byte-identical" 'grep -qF "session_id: NOT-THE-OWNER (model-written, untrusted)" "$TMP/.reload/session.md"'
 
+echo "-- unterminated fence: no frontmatter region exists, so NOTHING may be rewritten --"
+# The closed-fence case above proves the body is safe when the fence is well
+# formed. This proves it when the model drops the closing --- (or is truncated
+# mid-write): the old code treated "opened, never closed" as frontmatter running
+# to EOF, so the first body line starting session_id: was both READ as the owner
+# (feeding it into the user-visible warning) and REWRITTEN in place.
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nintent: "no closing fence"\n## Open questions & risks\nsession_id: NOT-THE-OWNER\n' > "$TMP/.reload/session.md"
+printf 'S_ARMER' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_NEW","source":"clear"}')"
+ck "unterminated fence: body line NOT rewritten" 'grep -qF "session_id: NOT-THE-OWNER" "$TMP/.reload/session.md"'
+ck "unterminated fence: no claim stamp injected" '! grep -qF "session_id: \"S_NEW\"" "$TMP/.reload/session.md"'
+ck "unterminated fence: body id never named as digest owner" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT-THE-OWNER\")" >/dev/null'
+ck "unterminated fence still rehydrates (fail-open, invariant 3)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext != null" >/dev/null'
+
 echo "== Structural guard: no id-equality condition governs an exit (v0.1.5) =="
 # Spec criterion 3's second prong. The behavioral tests above prove rehydration
 # happens on the inputs we thought to try; this proves nobody re-introduced the
