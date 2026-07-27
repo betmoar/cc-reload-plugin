@@ -46,5 +46,22 @@ SID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)" || ex
 # would make this hook exit non-zero — the one outcome its contract forbids.
 # No production hook in this plugin references that var directly; only the
 # test harness sets it. $0 is always defined.
-bash "$(dirname "$0")/../scripts/claim-digest.sh" "$SID" 2>/dev/null
+WARNING="$(bash "$(dirname "$0")/../scripts/claim-digest.sh" "$SID" 2>/dev/null)"
+
+# claim-digest.sh writes its warning as plain text, because /snapshot calls it
+# directly and relays that text. On THIS path plain stdout is invisible: Claude
+# Code surfaces hook stdout in the transcript only for UserPromptSubmit,
+# UserPromptExpansion and SessionStart, and writes it to the debug log for every
+# other event — PreToolUse included. Relaying it unwrapped meant the enforced
+# guard protected the digest silently while the user learned nothing, on the one
+# path that cannot be skipped. systemMessage is the user-facing channel here.
+#
+# jq -n --arg, never interpolation (invariant 8): the message embeds the
+# incumbent's session id, which comes from model-written frontmatter.
+#
+# No permissionDecision: omitting it leaves the normal permission flow intact,
+# which is what "always permit" means here. Emitting an explicit "allow" would
+# SKIP the user's own permission prompt — a guard that quietly widens
+# permissions is not a guard (invariant 11).
+[ -n "$WARNING" ] && jq -n --arg m "$WARNING" '{systemMessage:$m}'
 exit 0

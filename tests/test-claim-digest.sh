@@ -185,6 +185,17 @@ ck "side-files on the enforced path" '[ -f "$TMP/.reload/session.S_A.md" ]'
 ck "permits the write (exit 0)" 'have hooks/pretooluse-hook.sh && { pth "{\"session_id\":\"S_B\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" >/dev/null; [ $? -eq 0 ]; }'
 ck "never denies" 'have hooks/pretooluse-hook.sh && ! printf "%s" "$OUT" | grep -q "deny"'
 
+# The warning must reach the USER, and on PreToolUse only JSON does. Per the CC
+# hook contract, stdout on exit 0 is surfaced in the transcript for exactly
+# three events — UserPromptSubmit, UserPromptExpansion, SessionStart — and goes
+# to the debug log for everything else. Relaying claim-digest.sh's plain-text
+# stdout therefore silently drops the warning on the one path this hook exists
+# to enforce. Wrap it in {systemMessage} like every other user-facing hook path.
+ck "collision warning is valid JSON" 'have hooks/pretooluse-hook.sh && printf "%s" "$OUT" | jq -e . >/dev/null'
+ck "collision warning rides systemMessage (the only channel users see here)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "warning names the incumbent" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"S_A\")" >/dev/null'
+ck "warning carries no permission decision (permit stays implicit)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput == null and .decision == null" >/dev/null'
+
 echo "== PreToolUse: Edit is covered too =="
 reset_reload; fresh_digest S_A
 pth "{\"session_id\":\"S_B\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" >/dev/null
