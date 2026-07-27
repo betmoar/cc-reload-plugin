@@ -215,4 +215,53 @@ ck "snapshot.md calls the guard" 'grep -q "claim-digest.sh" "$ROOT/commands/snap
 echo "== the documented invariant survives edits =="
 ck "README states the one-session rule" 'grep -qi "one session per working directory" "$ROOT/README.md"'
 
+echo "== mtime probe is portable: GNU stat must not be reached BSD-first =="
+# Regression guard for the Linux CI failure. `stat -f` is the FORMAT flag on BSD
+# but means --file-system on GNU, where `stat -f %m FILE` PARTIALLY succeeds:
+# `%m` errors, FILE does not, and its filesystem info lands on STDOUT. Probing
+# BSD-first therefore captured multi-line garbage on Linux, the arithmetic died
+# under `set -u`, and the guard silently never fired — green on macOS, four
+# failures on CI. Two assertions, because either alone can be satisfied wrongly:
+# Match the ASSIGNMENT line only — the explanatory comment above it names both
+# forms, so a bare grep for either finds prose first and proves nothing.
+ck "GNU form (-c %Y) is probed before the BSD form (-f %m)" \
+  '[ -n "$(grep -E "^MTIME=.*stat -c %Y.*stat -f %m" "$ROOT/scripts/claim-digest.sh")" ]'
+ck "a non-numeric mtime stands the guard down" \
+  'grep -q "\*\[!0-9\]\*" "$ROOT/scripts/claim-digest.sh"'
+
+# Behavioral half: shadow `stat` with GNU semantics and prove the side-file still
+# happens. Without this, the greps above pass against any reordering that still
+# breaks. Skipped where the fixture cannot be made executable.
+GNUSIM="$TMP/gnusim"; mkdir -p "$GNUSIM"
+cat > "$GNUSIM/stat" <<'GNUEOF'
+#!/usr/bin/env bash
+# GNU coreutils semantics: -f is --file-system, NOT a format flag.
+set -u
+if [ "${1:-}" = "-f" ]; then
+  shift; rc=0
+  for f in "$@"; do
+    if [ -e "$f" ]; then printf '  File: "%s"\n    ID: 0  Namelen: 255  Type: ext4\n' "$f"
+    else printf 'stat: cannot statx %s\n' "$f" >&2; rc=1; fi
+  done
+  exit $rc
+fi
+if [ "${1:-}" = "-c" ]; then
+  fmt="$2"; shift 2
+  for f in "$@"; do
+    [ -e "$f" ] || { printf 'stat: cannot statx\n' >&2; exit 1; }
+    case "$fmt" in %Y) /usr/bin/stat -f %m "$f" 2>/dev/null || /bin/stat -c %Y "$f" ;; *) printf '%s\n' "$fmt" ;; esac
+  done
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+GNUEOF
+if chmod +x "$GNUSIM/stat" 2>/dev/null; then
+  reset_reload; fresh_digest S_A
+  PATH="$GNUSIM:$PATH" claim S_B >/dev/null 2>&1
+  ck "side-files under GNU stat semantics too" '[ -f "$TMP/.reload/session.S_A.md" ]'
+  reset_reload
+else
+  echo "  SKIP: cannot chmod +x the stat fixture — behavioral half not run"
+fi
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

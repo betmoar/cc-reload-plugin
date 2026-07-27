@@ -41,9 +41,25 @@ WINDOW="$(owner_window)"
 
 # Recency from FILESYSTEM MTIME, not the frontmatter updated_at: mtime is
 # written by the OS, updated_at by a model that may omit or staledate it. The
-# precedent is stop-hook.sh:50 (`-nt`). `stat -f %m` is the BSD/macOS form.
-MTIME="$(stat -f %m "$DIGEST" 2>/dev/null || stat -c %Y "$DIGEST" 2>/dev/null)" || exit 0
-[ -n "$MTIME" ] || exit 0
+# precedent is stop-hook.sh:50 (`-nt`).
+#
+# GNU FIRST, and the result VALIDATED — order and validation both matter:
+#   * BSD/macOS: -f is the format flag, so `stat -f %m FILE` prints the mtime.
+#   * GNU/Linux: -f means --file-system. `stat -f %m FILE` treats BOTH `%m` and
+#     FILE as operands — `%m` errors, but FILE succeeds and its FILESYSTEM info
+#     goes to STDOUT. A partial success: exit is non-zero, yet stdout is already
+#     poisoned with multi-line text. Trying BSD first therefore captures garbage
+#     on Linux (`File: …\n ID: … Type: …\n<mtime>`), and the arithmetic below
+#     died on `File: unbound variable` under `set -u` — exiting 0 (fail-open) so
+#     the guard silently never fired. Green on macOS, dead on CI.
+#   * `stat -c %Y` is unambiguous: GNU prints the mtime; BSD rejects -c outright
+#     with empty stdout, so the fallback is clean in that direction.
+# The digit check is the real guard: whatever survives must be a bare integer,
+# or we treat the mtime as unknown and stand down.
+MTIME="$(stat -c %Y "$DIGEST" 2>/dev/null || stat -f %m "$DIGEST" 2>/dev/null)"
+case "$MTIME" in
+  ''|*[!0-9]*) exit 0 ;;   # unknown/garbled mtime -> cannot judge freshness
+esac
 NOW="$(date +%s)"
 AGE=$(( NOW - MTIME ))
 [ "$AGE" -lt "$WINDOW" ] || exit 0             # stale: assume the owner is gone

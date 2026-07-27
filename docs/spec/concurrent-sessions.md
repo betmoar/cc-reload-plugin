@@ -1,11 +1,16 @@
 # Design note — cc-reload: the digest is a singleton slot
 
-**Status:** proposal, unimplemented. **Against:** cc-reload 0.2.0.
+**Status:** **implemented in 0.3.0.** Written against 0.2.0 as a proposal.
 **Origin:** observed in the field 2026-07-25, two Claude Code sessions in one working tree of
-`layerprocgen-babylon`. Claims below verified against installed 0.2.0 source; line numbers are that
-source.
+`layerprocgen-babylon`. Claims below were verified against installed **0.2.0** source, and any bare
+line number still cited here refers to *that* source — the 0.3.0 tree has shifted. References to
+code this note's own proposal changed have been rewritten as landmarks rather than line numbers;
+treat any remaining number as archaeology, not navigation.
 **Revised 2026-07-27** after a review panel — see the Clarifications section and
 `.review-panel/concurrent-sessions.md`.
+**Corrected 2026-07-27** — §4.2.3's premise ("ids match ⇒ no new gate on the happy path") was false
+and contradicted §3; it shipped as a defect and was fixed pre-release. See §4.2.3 and the
+acceptance criteria, both rewritten.
 
 ---
 
@@ -35,16 +40,16 @@ The digest path is a single per-project slot with no session dimension:
   ```
 - Both **agent-facing** write paths target it unconditionally: the `/snapshot` command
   (`commands/snapshot.md:21`, "overwrite") and the Stop-hook pass-1 REINJECT brief
-  (`stop-hook.sh:156-172`, "write .reload/session.md (overwrite it)"). Note that **no hook writes
-  the digest itself** — `grep -n DIGEST hooks/*.sh` shows Stop only reads it (`stop-hook.sh:50,52`);
+  (the pass-1 REINJECT heredoc in `stop-hook.sh`, "write .reload/session.md (overwrite it)"). Note that **no hook writes
+  the digest itself** — `grep -n DIGEST hooks/*.sh` shows Stop only reads it (the pass-2 freshness check);
   pass 1 touches `SUMMARIZING` and emits `{decision:"block"}`, and the *model* does the write on
   the next turn. The detector must therefore sit where the model can be made to call it, not
   where the hook happens to run.
-- The PreCompact mechanical fallback is **not** a clobber risk: `precompact-hook.sh:24` is
-  `if [ ! -f "$DIGEST" ]`, so it writes only when no digest exists. It is, however, the *only*
-  writer that stamps a real `session_id` (`precompact-hook.sh:19,29`) — see §4.2.
+- The PreCompact mechanical fallback is **not** a clobber risk: the fallback is guarded by
+  `if [ ! -f "$DIGEST" ]`, so it writes only when no digest exists. It was, before 0.3, the *only*
+  writer that stamped a real `session_id` (its `SESSION_ID` parse + fallback frontmatter) — see §4.2.
 - `PENDING`, `SUMMARIZING`, `NOTIFIED`, `MODELFILE` are single slots on the same basis. `PENDING`
-  is the sharpest of these: `sessionstart-hook.sh:40-44` consumes whatever arm it finds, so a
+  is the sharpest of these: `sessionstart-hook.sh` (the arm gate + consume) consumes whatever arm it finds, so a
   cross-session arm rehydrates the wrong thread outright.
 
 One project, one digest. Two sessions, last writer wins, silently.
@@ -52,14 +57,14 @@ One project, one digest. Two sessions, last writer wins, silently.
 ## 3. The constraint: session id cannot be the key here
 
 The obvious fix — key the digest by `session_id` — **does not work for cc-reload**, and the plugin
-already knows why. `sessionstart-hook.sh:35-39`:
+already knows why. `sessionstart-hook.sh`, the standing comment above the arm gate:
 
 > We do NOT also gate on session id: /clear (and resume) mint a fresh session id every time, so the
 > armed digest is always stamped with the PRIOR id and an id-equality check would suppress the
 > banner on its primary trigger 100% of the time.
 
 That reasoning is correct and was learned the hard way (the staleness guard was removed in v0.1.5;
-the comment recording it now lives in `precompact-hook.sh:15-17`, not in SessionStart where the
+the comment recording it now lives in `precompact-hook.sh`'s header, not in SessionStart where the
 guard itself was). It also rules out the natural extension:
 
 **Multi-slot storage (`.reload/sessions/<session-id>.md`) hits the same wall.** After `/clear`, the
@@ -215,7 +220,7 @@ them on a schedule would discard the only copy of the evidence. Document the acc
 This keeps the arm/rehydrate contract untouched — `PENDING` remains the sole gate on the
 *rehydrate* path, `/clear` keeps working — while converting a silent data loss into a visible one.
 Note the honest limit: the side-file is **manually** recoverable, not automatically.
-`sessionstart-hook.sh:41-44` reads only `$DIGEST`, so a subsequent `/clear` still rehydrates the
+`sessionstart-hook.sh` reads only `$DIGEST` on the rehydrate path, so a subsequent `/clear` still rehydrates the
 *winning* digest; recovering the loser means a human copying the side-file back. Teaching
 SessionStart to offer side-files when armed is possible but is deliberately out of scope here.
 
@@ -225,7 +230,7 @@ warned overwrite).
 
 #### 4.2.3 The same check for `PENDING`
 
-The digest is the visible loss; `PENDING` is the dangerous one. `sessionstart-hook.sh:40-44`
+The digest is the visible loss; `PENDING` is the dangerous one. `sessionstart-hook.sh`'s arm gate
 consumes whatever arm it finds and injects whatever digest sits beside it — so a cross-session arm
 does not merely lose work, it *rehydrates the wrong thread with confidence*, which is the failure
 §1 describes.
@@ -354,7 +359,7 @@ State these in the README next to the §4.1 invariant, so the guard is not mista
    write proceeds silently (§4.2.1). This is fail-open by choice.
 2. **Non-`Write` writes are uncovered.** A digest written via `Bash` bypasses `PreToolUse` (§4.3).
 3. **Recovery is manual.** The side-file is never consulted on rehydrate
-   (`sessionstart-hook.sh:41-44`); a human restores it.
+   (`sessionstart-hook.sh`, rehydrate path); a human restores it.
 4. **The other markers are unguarded.** `SUMMARIZING`, `NOTIFIED`, `MODELFILE` remain shared
    singletons (§2). Only `PENDING` gains an owner (§4.2.3), because only it can rehydrate the wrong
    thread.
@@ -493,7 +498,7 @@ polices, so §4.3 moves enforcement to a `PreToolUse` hook. Q2 and Q3 stand as a
   reliable only in PreCompact (`precompact-hook.sh:19,29`), which never clobbers. `stop-hook.sh`
   does not parse `.session_id` at all. How is the owner established?**
   → **A:** A **hook-stamped owner file.** SessionStart already parses real hook input
-  (`sessionstart-hook.sh:12-17`); it writes the true session id to a new `.reload/owner` marker.
+  (`sessionstart-hook.sh`, the `HOOK_INPUT` parse); it writes the true session id to a new `.reload/owner` marker.
   Hooks and the snapshot path both read that instead of trusting the model to know its own id.
   Costs one new marker; reliable on every path.
 
