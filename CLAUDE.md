@@ -53,7 +53,7 @@ PreToolUse hook (model Write/Edit)
 Every hook first: **exit 0 if jq is missing** (fail open — sourced `exit` in `lib.sh` exits the
 caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` → `active: true`).
 
-## Load-bearing invariants (each has a named test in tests/test-hooks.sh)
+## Load-bearing invariants (each has a named test; the suite is cited per entry)
 
 1. **Pass 2 always completes.** Once pass 1 blocked, the next Stop must consume `summarizing` and
    settle the arm *before* any budget/transcript gating — disabling the budget or losing the
@@ -100,14 +100,27 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     dead session's digest (audit F03). (Tests: "clear purges the leaked handshake", "resume keeps
     a mid-flight handshake"; e2e cycle 6.)
 11. **The ownership guard never blocks and never gates.** `claim-digest.sh` and the PreToolUse
-    hook exit 0 unconditionally; SessionStart warns on a foreign arm but always rehydrates. A guard
-    that can fail the snapshot it guards is worse than the loss it prevents, and gating rehydrate on
-    id equality is the v0.1.5 bug (invariant 3). (Tests: "permits the write", "foreign arm STILL
-    rehydrates"; e2e cycle 7.8.)
+    hook exit 0 unconditionally; SessionStart warns on an incoherent arm but always rehydrates. A
+    guard that can fail the snapshot it guards is worse than the loss it prevents, and gating
+    rehydrate on id equality is the v0.1.5 bug (invariant 3). (Tests: "permits the write"
+    (`tests/test-claim-digest.sh`), "incoherent arm STILL rehydrates" (`tests/test-hooks.sh`);
+    e2e cycle 7.)
 12. **Owner identity lives in the artifact, never in a shared slot.** The digest's `session_id`
     frontmatter and `pending`'s file content carry it. A directory-global owner marker is
     overwritten by whichever session starts last and identifies neither party — the original defect
-    one level up (spec §4.2.1, rejected). (Tests: "digest_owner: …", "arm ownership: …")
+    one level up (spec §4.2.1, rejected). (Tests: "digest_owner: …" (`tests/test-claim-digest.sh`),
+    "arm ownership: …" (`tests/test-hooks.sh`).)
+13. **Compare lineage, not identity — and never against this session's own id.** `/clear` mints a
+    fresh session id every time, so *any* check of "is this artifact mine?" is false on the
+    plugin's own primary path. The first cut of the guard did exactly that and warned on 100% of
+    ordinary `/clear` rehydrations while cutting an unbounded side-file per reset (caught in
+    whole-branch review, reproduced live, fixed pre-release). Two rules replace it: SessionStart
+    **claims** the digest it rehydrates (rewrites frontmatter `session_id` to its own id —
+    frontmatter-scoped, atomic, silent on failure), and the arm warning fires on **incoherence**
+    (`ARM_OWNER != DIGEST_OWNER`), which cannot arise from one session. Before adding any new id
+    comparison, state which side rotates across a reset. (Tests: "ordinary /clear is silent",
+    "second cycle stays silent", "incoherent arm warns" (`tests/test-hooks.sh`); e2e single-session
+    lifecycle cycle. Spec §4.2.3, corrected.)
 
 ## Non-obvious decisions and rejected alternatives
 

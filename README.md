@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.2.1.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.3.0.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -248,6 +248,12 @@ that guard has known limits:
 - Recovery is manual — the side-file is never consulted on rehydrate; copy it back yourself.
 - Only `pending` carries an owner. `summarizing`, `notified`, and `model` remain shared.
 - This is a detector, not isolation. Separate worktrees are the actual fix.
+
+It deliberately says nothing on the ordinary path. Because `/clear` mints a fresh session id every
+time, the guard tracks a *lineage* rather than an identity: rehydrating a digest claims it for the
+new session, so a single user resetting a single directory never sees a warning or a side-file. The
+warning fires when the arm and the digest disagree about who wrote them — a state one session
+cannot produce.
 
 See `CLAUDE.md` for the maintainer handoff: architecture map, invariants, and how to change each
 load-bearing path safely.

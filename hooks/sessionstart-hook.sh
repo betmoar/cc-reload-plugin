@@ -37,10 +37,11 @@ esac
 # time, so the armed digest is always stamped with the PRIOR id and an id-equality
 # check would suppress the banner on its primary trigger 100% of the time. The arm
 # is self-scoping (per-project dir, consumed on use), so identity adds nothing.
-# (Since 0.3 we DO compare ids — but only to WARN. The gate above is still the
-# arm alone. "Warn on mismatch" and "gate on equality" are different things:
-# the second is the v0.1.5 bug, the first is what makes a cross-session arm
-# visible. Never let the comparison reach an `exit`.)
+# (Since 0.3 we DO compare ids — but only to WARN, and NOT against this
+# session's own id: see the arm-coherence block below for why that comparison
+# is meaningless here. The gate is still the arm alone. "Warn" and "gate" are
+# different things: the second is the v0.1.5 bug. Never let a comparison reach
+# an `exit`.)
 [ -f "$PENDING" ] || exit 0
 [ -f "$DIGEST" ]  || { rm -f "$PENDING"; exit 0; }
 

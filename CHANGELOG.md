@@ -4,6 +4,54 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-27
+
+### Added
+- **Concurrent-session digest guard.** Two Claude Code sessions in one working directory share one
+  `.reload/`, and until now the second silently overwrote the first's digest — and could consume
+  its arm marker, rehydrating the *wrong* working thread into a fresh context with full confidence.
+  The plugin now detects both, loudly, and never blocks anything:
+  - `scripts/claim-digest.sh` — the comparator. When the digest on disk belongs to a **different**
+    session and was written recently, it is copied aside to `.reload/session.<id>.md` before the
+    overwrite lands, with a warning naming the incumbent. Exits 0 unconditionally: a guard that can
+    fail the snapshot it guards is worse than the loss it prevents.
+  - A **`PreToolUse` hook** (`matcher: "Write|Edit"`, path-scoped to the digest by resolved path) is
+    the enforcement point. Both clobbering paths end in the model calling `Write`, so a check
+    reached only by a documented step is skippable by the actor it polices — and its unit tests
+    would pass green over the unguarded live path.
+  - **The arm marker carries its owner.** `.reload/pending` holds the arming session's id instead of
+    being an empty `touch`. An arm whose owner disagrees with the digest's owner is flagged on
+    rehydrate. It is never suppressed — rehydration proceeds every time (see 0.1.5).
+  - **`/snapshot` stamps a runtime id** from `$CLAUDE_CODE_SESSION_ID` rather than asking the model
+    to recall its own session id.
+- **`context_owner_window` config key** — seconds (default `14400` = 4h; `0` or `off` disables). How
+  recently another session must have written the digest for an overwrite to count as a live
+  collision worth preserving.
+- **One-session-per-working-directory invariant**, documented in the README with the guard's honest
+  coverage limits: an un-owned digest is overwritten silently, a digest written via a `Bash` heredoc
+  bypasses the `Write`/`Edit` guard, recovery from a side-file is manual, and only `pending` carries
+  an owner. This is a detector, not isolation — separate worktrees remain the actual fix.
+
+### Fixed
+- **The guard no longer fires on ordinary `/clear`.** Its first cut compared **session identity**,
+  but `/clear` mints a fresh session id every time — so "the digest belongs to someone else" and
+  "this arm isn't mine" were *always* true for a single user in a single directory. Caught by
+  whole-branch review and reproduced live before release: every reset printed
+  `⚠️ armed by a different session in this directory` and cut a side-file, unbounded, forever.
+  Both are fixed by comparing **lineage** instead:
+  - `SessionStart` now **claims** the digest it rehydrates, rewriting its frontmatter `session_id`
+    to the consuming session's id (frontmatter-scoped, atomic, silent on failure). "Inherited"
+    becomes "mine", so the next snapshot is correctly silent; a genuinely foreign write — one that
+    never passed through that handoff — still collides and is still preserved.
+  - The arm warning now fires on **incoherence** (the arm's owner disagrees with the digest's
+    owner: session A armed, session B overwrote the digest beside that arm) rather than on
+    inequality, which was merely the definition of `/clear`.
+  - `claim-digest.sh` no longer preserves byte-identical content twice, so `/snapshot` reaching the
+    comparator via both its courtesy call and the `PreToolUse` hook yields one side-file, not two.
+  `docs/spec/concurrent-sessions.md` §4.2.3 has been corrected — the false premise ("ids match ⇒ no
+  new gate on the happy path") contradicted the same spec's §3, and is the root the code faithfully
+  implemented.
+
 ## [0.2.1] - 2026-07-24
 
 ### Fixed

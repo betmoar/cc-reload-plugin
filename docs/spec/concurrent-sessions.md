@@ -232,21 +232,50 @@ does not merely lose work, it *rehydrates the wrong thread with confidence*, whi
 
 So the arm carries its owner **as marker content** — `printf '%s' "$id" > "$PENDING"` instead of
 `touch "$PENDING"` — for the same reason as §4.2.1: identity travels with the artifact, so nothing
-can overwrite it out of band. `SessionStart` compares that content against **its own** id, which it
-has directly on hook input (`sessionstart-hook.sh:12`, already parsed for `.source` and `.model`):
+can overwrite it out of band.
 
-- ids match, or the marker is empty (pre-0.3 arms, or a path with no runtime id) ⇒ rehydrate
-  exactly as today. **No new gate on the happy path.**
-- ids differ ⇒ still rehydrate (the v0.1.5 lesson holds — never suppress the banner), but prepend a
-  warning to the `systemMessage`: this digest was armed by a different session in this directory,
-  verify before trusting it.
+**What that content must be compared against is the correction below.** This section originally
+said `SessionStart` compares the arm's owner to **its own** incoming id, and asserted that "ids
+match ⇒ **no new gate on the happy path**." That assertion is false, and it contradicts this
+spec's own §3: `/clear` mints a fresh session id every time, so the arm's owner and the consuming
+session's id **never** match on the plugin's primary trigger. Shipped literally, it warned on 100%
+of ordinary `/clear` rehydrations for a single user in a single directory, and — via §4.2.2's
+comparator seeing an inherited digest as foreign — cut an unbounded side-file on every reset.
+Both were caught by whole-branch review and reproduced live before release.
 
-Note the comparison is against the *consuming session's own* id, not a shared marker — and the
-freshness window does not apply here. An arm is one-shot and short-lived by construction; an id
-mismatch is meaningful whenever it occurs.
+The error was comparing **identity** where the system needs **lineage**. A session id names one
+session; what the guard must recognise is the chain S1→S2→S3 that one user produces by pressing
+`/clear`. Two rules give us that:
+
+**Claim on rehydrate.** Once `SessionStart` has injected the digest, this session *is* the one
+carrying that working thread. It rewrites the digest's frontmatter `session_id` to its own id
+(frontmatter-scoped — the body is model-written and untrusted; atomic temp-then-`mv`; silent and
+non-fatal on any failure). "Inherited" becomes "mine", so §4.2.2's comparator is correctly silent
+on the next snapshot. A genuinely foreign write — one that never passed through this handoff —
+still collides and is still side-filed.
+
+**Warn on incoherence, not on inequality.** The real signal is whether the arm and the digest
+*agree*: whoever armed should also be who wrote the digest.
+
+- `ARM_OWNER == DIGEST_OWNER` ⇒ a coherent handoff — the ordinary `/clear`, or a second session
+  that armed its own snapshot. Rehydrate exactly as today, silently.
+- `ARM_OWNER != DIGEST_OWNER`, both non-empty ⇒ **incoherent**: session A armed, then session B
+  overwrote the digest beside that arm. The arm now points at a thread its armer never wrote —
+  which is precisely the §1 failure. Still rehydrate (the v0.1.5 lesson holds — never suppress the
+  banner), but prepend a warning naming both ids.
+- Either side empty ⇒ silent (pre-0.3 arm, or a path with no runtime id; §4.4 limit 1).
+
+This is strictly *more* precise than an id comparison, not weaker: it fires on a state that cannot
+arise from a single session, and stays quiet on the state that arises at every reset. Neither
+comparison involves the consuming session's own id, and the freshness window does not apply here —
+an arm is one-shot and short-lived by construction.
 
 The invariant is: the owner check may **add warnings**, never **subtract rehydrations**. §5
 criterion 3 is the regression guard.
+
+> **Lesson for the next revision of this document.** Any check that compares a session id against
+> something that survives a reset will fire on every `/clear`. Before specifying such a comparison,
+> state explicitly which side rotates — §3 already knew, and §4.2.3 did not consult it.
 
 #### 4.2.4 Cost
 
@@ -360,15 +389,31 @@ hooks with a per-test `CLAUDE_PROJECT_DIR` (`tests/test-hooks.sh:10-12`) and man
 
 3. **Rehydration is never suppressed.** Enumerated, not universal — SessionStart injects
    `additionalContext` for every one of: `{armed + clear, armed + compact, armed + resume,
-   armed + clear immediately after a side-file event, armed with an arm-owner ≠ this session's id}`.
-   The first three already have tests (`tests/test-hooks.sh:29-37`, `tests/test-hooks.sh:331-333`,
-   `tests/test-e2e.sh` cycle 2.4); the last two are new. Regression guard for the v0.1.5 lesson:
-   `grep` of `hooks/sessionstart-hook.sh` finds no id-equality condition governing an `exit`.
+   armed + clear immediately after a side-file event, armed with an arm-owner ≠ the digest's
+   owner}`. The first three already have tests (`tests/test-hooks.sh:29-37`,
+   `tests/test-hooks.sh:331-333`, `tests/test-e2e.sh` cycle 2.4); the last two are new. Regression
+   guard for the v0.1.5 lesson: `grep` of `hooks/sessionstart-hook.sh` finds no id comparison
+   governing an `exit`.
 
-4. **Cross-session arm warns but still rehydrates.** `PENDING` containing `S_A`, SessionStart
-   invoked with `{"session_id":"S_B",…}`: emits `additionalContext` (criterion 3 holds) **and** a
-   `systemMessage` matching the cross-session warning. Consumes the marker exactly once, as today.
-   An **empty** `PENDING` (pre-0.3 arm) rehydrates with no warning.
+4. **An incoherent arm warns; an ordinary `/clear` does not.** Both halves are required — the
+   second is what the pre-release revision of §4.2.3 got wrong.
+   - *Warns:* `PENDING` containing `S_A` beside a digest owned by `S_B`, SessionStart invoked with
+     any incoming id: emits `additionalContext` (criterion 3 holds) **and** a `systemMessage`
+     naming both ids. Consumes the marker exactly once, as today.
+   - *Silent:* `PENDING` containing `S_1` beside a digest owned by `S_1`, SessionStart invoked with
+     a **fresh** id `S_2` — the ordinary `/clear`. No warning, and the digest's frontmatter
+     `session_id` reads `S_2` afterwards (the lineage claim). A second cycle `S_2`→`S_3` is likewise
+     silent, proving the claim persisted rather than the false positive merely being deferred one
+     turn. An **empty** `PENDING` (pre-0.3 arm) rehydrates with no warning and leaves the stamp
+     untouched.
+   - *Untrusted body:* a digest whose **body** contains a line beginning `session_id:` has only its
+     frontmatter rewritten by the claim; the body line survives byte-identical.
+
+4a. **A single-session lifecycle is completely silent.** Through the real hooks:
+   snapshot → arm → clear → rehydrate → snapshot again produces **zero** side-files and **zero**
+   warnings. This is the end-to-end regression guard for the identity-vs-lineage defect; without it
+   a later refactor reintroduces it invisibly, since every unit test can pass while the composed
+   path misfires.
 
 5. **Un-owned is silent.** Incumbent `session_id: ""`, or absent, or no frontmatter at all, or an id
    equal to the writer's, or a digest older than the window, or `context_owner_window: 0`: no
