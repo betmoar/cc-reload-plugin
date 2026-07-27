@@ -25,9 +25,9 @@ Requested value: **$ARGUMENTS**
 4. Confirm in one line, e.g. "Reload budget → 30% (was 45%), mode notify — I'll nudge you to
    /snapshot + /clear when context crosses ~30%."
 
-Note: this is the per-project default. The effective trigger is best-effort — it reads per-turn
-token usage from the transcript against the model's window (stamped at session start); if that
-signal is unavailable it falls back to a byte estimate that errs early (safer for staying low).
+Note: per-project default. The trigger is best-effort — per-turn token usage from the transcript
+against the model's window (stamped at session start); if unavailable it falls back to a byte
+estimate that errs early.
 
 ## Configuration keys
 

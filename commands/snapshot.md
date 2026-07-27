@@ -20,11 +20,8 @@ Otherwise:
    single line `*` (so this per-session state is never committed to the user's project).
 2. Check for a concurrent session before overwriting:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/claim-digest.sh" "$CLAUDE_CODE_SESSION_ID"`
-   If it prints a warning, relay it to the user verbatim — another session in this directory
-   owns the current digest and it has been saved aside. Never skip the write because of this;
-   the script has already preserved the incumbent. (This is a courtesy check: the PreToolUse
-   hook enforces the same guard on the actual write, so skipping this step loses the early
-   warning, not the protection.)
+   If it prints a warning, relay it verbatim — another session owns the current digest and it has
+   been saved aside. Never skip the write because of this; the incumbent is already preserved.
 3. Write `.reload/session.md` (overwrite), tight — under ~30 lines — using the template shape
    from `${CLAUDE_PLUGIN_ROOT}/templates/session.md`:
    - frontmatter: `session_id` — run: `echo "$CLAUDE_CODE_SESSION_ID"` — paste that value;
