@@ -33,6 +33,16 @@ repete_active && exit 0
 
 HOOK_INPUT="$(cat)"
 
+# This session's id, for arm ownership (spec §4.2.3). Stop's payload carries
+# session_id; the transcript filename IS the session id (verified), so its
+# basename is an equivalent fallback if the field is ever absent. Parsed HERE,
+# before pass 2, because pass 2 must not depend on the transcript being readable.
+SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)"
+if [ -z "$SESSION_ID" ]; then
+  _tp="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)"
+  [ -n "$_tp" ] && SESSION_ID="$(basename "$_tp" .jsonl)"
+fi
+
 # pass 2: a snapshot turn just ran (the summarizing marker is set).
 # Complete the cycle here — arm the reload and yield — BEFORE any budget or
 # transcript gating. Pass 1 already committed us to a reset, so this must not
@@ -50,7 +60,16 @@ if [ -f "$SUMMARIZING" ]; then
   [ -f "$DIGEST" ] && [ "$DIGEST" -nt "$SUMMARIZING" ] && FRESH=1
   rm -f "$SUMMARIZING"
   if [ -f "$DIGEST" ]; then
-    touch "$PENDING"
+    # Stamp the arm's owner when we have one. When we do NOT, fall back to the
+    # literal `touch` rather than writing an empty file: an empty arm must keep
+    # meaning exactly what it means today (a pre-0.3 / un-owned arm), or the
+    # unknown-id case silently becomes the new default and the ownership tests
+    # would be asserting the fallback rather than the feature.
+    if [ -n "$SESSION_ID" ]; then
+      printf '%s' "$SESSION_ID" > "$PENDING" 2>/dev/null || touch "$PENDING" 2>/dev/null
+    else
+      touch "$PENDING" 2>/dev/null
+    fi
     if [ -n "$FRESH" ]; then
       jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically (you'll see a '🔄 restored' line; run /reload for the full sitrep)." \
         '{systemMessage:$m}'
@@ -158,7 +177,7 @@ Context is ~'"$OCCUPANCY"'% of the window (budget '"$PCT"'%). Reset before rot s
 
 Write .reload/session.md (overwrite it), tight — under ~30 lines — with frontmatter and four sections:
   ---
-  session_id: "<this session id, if known; else omit>"
+  session_id: "<run: echo "$CLAUDE_CODE_SESSION_ID" — paste that value; if empty, use an empty string>"
   updated_at: "<ISO8601>"
   intent: "<one line: what this session is doing>"
   ---

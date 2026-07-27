@@ -19,7 +19,12 @@ HOOK_INPUT="$(cat)"
 SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""')"
 
 ensure_reload_dir
-touch "$PENDING"   # arm: rehydrate after compaction completes
+# arm + stamp its owner (same non-empty guard as stop-hook.sh — see 3b)
+if [ -n "$SESSION_ID" ]; then
+  printf '%s' "$SESSION_ID" > "$PENDING" 2>/dev/null || touch "$PENDING" 2>/dev/null
+else
+  touch "$PENDING" 2>/dev/null
+fi
 
 if [ ! -f "$DIGEST" ]; then
   # Mechanical fallback — no agent-authored digest exists yet. Leave an honest

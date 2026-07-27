@@ -335,4 +335,50 @@ OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
 ck "clear purges the leaked handshake" '[ ! -f "$TMP/.reload/summarizing" ]'
 ck "clear purges the notify ladder" '[ ! -f "$TMP/.reload/notified" ]'
 
+echo "== Arm ownership: PENDING carries the arming session's id =="
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+
+# PreCompact arms with its own id.
+run precompact-hook.sh '{"session_id":"S_PC","trigger":"manual"}' >/dev/null
+ck "precompact stamps the arm" '[ "$(cat "$TMP/.reload/pending")" = "S_PC" ]'
+
+# Same-session rehydrate: no warning.
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_PC","source":"clear"}')"
+ck "own arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "own arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+
+# Cross-session arm: STILL rehydrates, but warns.
+printf 'S_A' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_B","source":"clear"}')"
+ck "foreign arm STILL rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "foreign arm warns" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "foreign arm still consumed" '[ ! -f "$TMP/.reload/pending" ]'
+
+# Pre-0.3 empty arm: rehydrates, no warning, no migration noise.
+touch "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_B","source":"clear"}')"
+ck "empty arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "empty arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+
+echo "== Structural guard: no id-equality condition governs an exit (v0.1.5) =="
+# Spec criterion 3's second prong. The behavioral tests above prove rehydration
+# happens on the inputs we thought to try; this proves nobody re-introduced the
+# gate itself. An id comparison may set a warning flag — it must never reach exit.
+ck "no id comparison guards an exit" '! grep -nE "(ARM_OWNER|SESSION_ID).*(&&|\|\|).*exit|exit.*(ARM_OWNER|SESSION_ID)" "$H/sessionstart-hook.sh"'
+
+echo "== Stop pass 2 stamps the arm from its own payload =="
+rm -f "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/summarizing"
+touch "$TMP/.reload/session.md"     # fresher than the marker
+OUT="$(run stop-hook.sh "{\"session_id\":\"S_STOP\",\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "stop pass2 stamps the arm" '[ "$(cat "$TMP/.reload/pending")" = "S_STOP" ]'
+
+# Fallback: no session_id field, but a transcript path whose basename is the id.
+rm -f "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/summarizing"; touch "$TMP/.reload/session.md"
+printf '{}\n' > "$TMP/S_FALLBACK.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/S_FALLBACK.jsonl\"}")"
+ck "stop falls back to transcript basename" '[ "$(cat "$TMP/.reload/pending")" = "S_FALLBACK" ]'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

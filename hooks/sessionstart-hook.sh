@@ -37,8 +37,20 @@ esac
 # time, so the armed digest is always stamped with the PRIOR id and an id-equality
 # check would suppress the banner on its primary trigger 100% of the time. The arm
 # is self-scoping (per-project dir, consumed on use), so identity adds nothing.
+# (Since 0.3 we DO compare ids — but only to WARN. The gate above is still the
+# arm alone. "Warn on mismatch" and "gate on equality" are different things:
+# the second is the v0.1.5 bug, the first is what makes a cross-session arm
+# visible. Never let the comparison reach an `exit`.)
 [ -f "$PENDING" ] || exit 0
 [ -f "$DIGEST" ]  || { rm -f "$PENDING"; exit 0; }
+
+# Arm ownership (spec §4.2.3). WARNS on a foreign arm; NEVER gates on it —
+# /clear mints a fresh id every time, so an equality gate would suppress the
+# banner on its primary trigger (the v0.1.5 lesson, invariant 3).
+ARM_OWNER="$(cat "$PENDING" 2>/dev/null)"
+SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)"
+FOREIGN_ARM=""
+[ -n "$ARM_OWNER" ] && [ -n "$SESSION_ID" ] && [ "$ARM_OWNER" != "$SESSION_ID" ] && FOREIGN_ARM=1
 
 BODY="$(cat "$DIGEST")"
 rm -f "$PENDING"   # consume the arm
@@ -66,6 +78,7 @@ NEXT_LINE="$(_first_line 'Next concrete step')"
 INFLIGHT_LINE="$(_first_bullet 'In flight')"
 
 MSG="🔄 cc-reload (${SOURCE})"
+[ -n "$FOREIGN_ARM" ] && MSG="⚠️ armed by a different session in this directory ($ARM_OWNER) — verify before trusting it | $MSG"
 [ -n "$INTENT" ] && MSG="$MSG — $(_truncate "$INTENT" 80)"
 if [ -n "$DONE_LINE" ]; then
   MSG="$MSG | ✓ $(_truncate "$DONE_LINE" 60)"
