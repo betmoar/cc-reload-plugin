@@ -144,4 +144,50 @@ else
 fi
 reset_reload
 
+pth(){ # pth <json>  -> run the PreToolUse hook with that payload
+  printf '%s' "$1" | CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$ROOT" \
+    bash "$ROOT/hooks/pretooluse-hook.sh"
+}
+
+echo "== PreToolUse: Write to the digest triggers the guard =="
+reset_reload; fresh_digest S_A
+OUT="$(pth "{\"session_id\":\"S_B\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}")"
+ck "side-files on the enforced path" '[ -f "$TMP/.reload/session.S_A.md" ]'
+ck "permits the write (exit 0)" 'have hooks/pretooluse-hook.sh && { pth "{\"session_id\":\"S_B\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" >/dev/null; [ $? -eq 0 ]; }'
+ck "never denies" 'have hooks/pretooluse-hook.sh && ! printf "%s" "$OUT" | grep -q "deny"'
+
+echo "== PreToolUse: Edit is covered too =="
+reset_reload; fresh_digest S_A
+pth "{\"session_id\":\"S_B\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" >/dev/null
+ck "Edit side-files" '[ -f "$TMP/.reload/session.S_A.md" ]'
+
+echo "== PreToolUse: unrelated paths and tools are untouched =="
+reset_reload; fresh_digest S_A
+OUT="$(pth "{\"session_id\":\"S_B\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/somewhere-else.md\"}}")"
+ck "other path -> no side-file" 'have hooks/pretooluse-hook.sh && [ ! -f "$TMP/.reload/session.S_A.md" ]'
+ck "other path -> silent" 'have hooks/pretooluse-hook.sh && [ -z "$OUT" ]'
+
+reset_reload; fresh_digest S_A
+OUT="$(pth "{\"session_id\":\"S_B\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}")"
+ck "Read -> no side-file" 'have hooks/pretooluse-hook.sh && [ ! -f "$TMP/.reload/session.S_A.md" ]'
+ck "Read -> silent" 'have hooks/pretooluse-hook.sh && [ -z "$OUT" ]'
+
+echo "== PreToolUse: a symlinked path still matches (no silent miss) =="
+reset_reload; fresh_digest S_A
+ln -s .reload "$TMP/linked-reload" 2>/dev/null
+pth "{\"session_id\":\"S_B\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/linked-reload/session.md\"}}" >/dev/null
+ck "symlinked digest path fires the guard" '[ -f "$TMP/.reload/session.S_A.md" ]'
+rm -f "$TMP/linked-reload"
+reset_reload
+
+echo "== PreToolUse: malformed payload fails open =="
+reset_reload; fresh_digest S_A
+ck "empty stdin exits 0" 'have hooks/pretooluse-hook.sh && { printf "" | CLAUDE_PROJECT_DIR="$TMP" bash "$ROOT/hooks/pretooluse-hook.sh" >/dev/null 2>&1; [ $? -eq 0 ]; }'
+ck "garbage stdin exits 0" 'have hooks/pretooluse-hook.sh && { printf "not json" | CLAUDE_PROJECT_DIR="$TMP" bash "$ROOT/hooks/pretooluse-hook.sh" >/dev/null 2>&1; [ $? -eq 0 ]; }'
+ck "missing session_id exits 0" 'have hooks/pretooluse-hook.sh && { pth "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" >/dev/null; [ $? -eq 0 ]; }'
+# The hook must not reference $CLAUDE_PLUGIN_ROOT: under `set -u` an unexported
+# var is a fatal unbound error, and no production hook in this plugin gets it.
+ck "does not depend on CLAUDE_PLUGIN_ROOT" '! grep -q "CLAUDE_PLUGIN_ROOT" "$ROOT/hooks/pretooluse-hook.sh"'
+reset_reload
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
