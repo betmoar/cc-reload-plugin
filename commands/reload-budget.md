@@ -28,3 +28,9 @@ Requested value: **$ARGUMENTS**
 Note: this is the per-project default. The effective trigger is best-effort — it reads per-turn
 token usage from the transcript against the model's window (stamped at session start); if that
 signal is unavailable it falls back to a byte estimate that errs early (safer for staying low).
+
+## Configuration keys
+
+- `context_owner_window <seconds | off>` — how recently another session must have written
+  `.reload/session.md` for an overwrite to count as a live collision worth side-filing.
+  Default `14400` (4h). `off` disables the cross-session check entirely.
