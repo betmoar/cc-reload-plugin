@@ -42,6 +42,12 @@ touch "$TMP/.reload/pending"
 OUT="$(run sessionstart-hook.sh '{"session_id":"S1","source":"clear"}')"
 ck "SessionStart stands down (no output)" '[ -z "$OUT" ]'
 ck "did not consume marker while stood down" '[ -f "$TMP/.reload/pending" ]'
+mkdir -p "$TMP/.repete"; printf -- '---\nactive: true\n---\n' > "$TMP/.repete/loop.local.md"
+touch "$TMP/.reload/pending"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "Stop stands down under a repete loop" '[ -z "$OUT" ]'
+OUT="$(run precompact-hook.sh '{"session_id":"S1","trigger":"manual"}')"
+ck "PreCompact stands down under a repete loop" '[ -z "$OUT" ]'
 rm -rf "$TMP/.repete"
 
 echo "== PreCompact: arms + ensures a digest =="

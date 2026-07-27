@@ -195,4 +195,7 @@ ck "snapshot.md stamps session_id from the runtime" 'grep -q "CLAUDE_CODE_SESSIO
 ck "snapshot.md arms with an owner, not bare touch" '! grep -qE "^[0-9]+\. Arm the reload: .touch" "$ROOT/commands/snapshot.md"'
 ck "snapshot.md calls the guard" 'grep -q "claim-digest.sh" "$ROOT/commands/snapshot.md"'
 
+echo "== the documented invariant survives edits =="
+ck "README states the one-session rule" 'grep -qi "one session per working directory" "$ROOT/README.md"'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
