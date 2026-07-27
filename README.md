@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.2.0.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.2.1.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -54,7 +54,10 @@ and **auto-detects each user's window** — nothing is hardcoded to one setup:
    assumed to be a large (1M) window.
 2. The `Stop` hook gets **no model id**, so it reads the model from the **last assistant turn** in
    the transcript and re-stamps `.reload/model` if it changed (mid-session `/model` switches are
-   picked up). It then reads that turn's input tokens (input + cache) and computes occupancy against
+   picked up). One exception: the transcript carries the bare API id, never a `[1m]` alias suffix —
+   if the stamp is a `[1m]` form of the *same* model (e.g. `sonnet[1m]` vs `claude-sonnet-4-5-…`),
+   the stamp stands, so a 1M-beta session is never downgraded to its 200K base id. It then reads
+   that turn's input tokens (input + cache) and computes occupancy against
    the window. If the window is entirely unknown (no stamp yet, no override) it **assumes a large 1M
    window** — so a 1M session is never nagged before the stamp exists; the trade-off is that a
    genuinely small un-stamped session snapshots late (PreCompact + auto-compaction still backstop it).

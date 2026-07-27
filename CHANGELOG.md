@@ -4,6 +4,18 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-24
+
+### Fixed
+- **Stop-hook model refresh no longer downgrades a `[1m]` session to its 200K base window**
+  (audit F05). The transcript's `message.model` carries only the bare API id — never the `[1m]`
+  alias suffix the session was configured with — so the mid-session refresh restamped e.g.
+  `claude-sonnet-4-5[1m]` (1M) as `claude-sonnet-4-5-…` (200K), inflating occupancy 5x and firing
+  false budget nudges from ~9% real usage. The refresh now keeps the stamp when the live id is the
+  same model as a `[1m]` stamp (its base name appears in the live id); a genuine mid-session
+  `/model` switch to a different family still restamps. Current-generation `[1m]` configs
+  (`fable-5[1m]`, `opus-4-8[1m]`) were unaffected — their base ids already resolve to 1M.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added
