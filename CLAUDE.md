@@ -7,11 +7,14 @@ without breaking the others.
 
 ## What this is, in one paragraph
 
-Three bash hooks + three slash commands + one skill that keep a Claude Code session's working
+Four bash hooks + three slash commands + one skill that keep a Claude Code session's working
 thread alive across context resets. State machine on disk under the user's project at `.reload/`:
-a digest (`session.md`), a one-shot arm marker (`pending`), a two-pass handshake marker
-(`summarizing`), a notify ladder (`notified`), a model/window stamp (`model`), and per-project
-config (`config`). There is no daemon, no network, no state anywhere else.
+a digest (`session.md`), a one-shot arm marker (`pending`, now stamped with its arming session
+id when known), a two-pass handshake marker (`summarizing`), a notify ladder (`notified`), a
+model/window stamp (`model`), per-project config (`config`), and — since 0.3 — side-filed digests
+from a detected cross-session collision (`session.<id>.md`). The fourth hook, `PreToolUse`, is a
+same-session enforcement point for that collision guard, not a new continuity mechanism. There is
+no daemon, no network, no state anywhere else.
 
 ## Control flow (the whole system)
 
@@ -38,14 +41,19 @@ SessionStart hook (startup|resume|clear|compact)
   ├─ stamp model id + resolved window to .reload/model (Stop gets no model field — this bridges it)
   ├─ startup|clear|compact (NOT resume) → purge leaked `summarizing` + `notified`; a handshake
   │     must not outlive its context (see invariant 10)
-  └─ `pending` present? → inject digest as additionalContext + visible systemMessage banner;
+  └─ `pending` present? → inject digest as additionalContext + visible systemMessage banner
+        (WARNS if `pending`'s stamped owner differs from this session's id — never gates on it);
         consume the marker (one-shot). Not armed → do nothing (a deliberate /clear is respected).
+
+PreToolUse hook (model Write/Edit)
+  └─ path == $DIGEST && tool is Write|Edit && payload has session_id?
+       → claim-digest.sh: foreign + fresh incumbent -> side-file + warn; ALWAYS exit 0 (permit)
 ```
 
 Every hook first: **exit 0 if jq is missing** (fail open — sourced `exit` in `lib.sh` exits the
 caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` → `active: true`).
 
-## Load-bearing invariants (each has a named test in tests/test-hooks.sh)
+## Load-bearing invariants (each has a named test; the suite is cited per entry)
 
 1. **Pass 2 always completes.** Once pass 1 blocked, the next Stop must consume `summarizing` and
    settle the arm *before* any budget/transcript gating — disabling the budget or losing the
@@ -65,8 +73,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
    occupancy — far worse than snapshotting a small session late (PreCompact still backstops it).
    Same reason the >200K-observed-usage self-heal only ever *raises* the window. A **valid**
    `context_window` override pins everything; an *invalid* one (0, garbage) must behave exactly
-   like no override — it feeds a division and gates the self-heal. (Tests: "window UNKNOWN…",
-   "context_window: 0 …", "auto-corrects upward…")
+   like no override — it feeds a division and gates the self-heal. The transcript's `message.model`
+   is **lossy w.r.t. `[1m]` aliases** (bare API id only): the Stop-hook refresh must never restamp a
+   `[1m]`-stamped model with its own bare id — that downgrades a 1M-beta session to its 200K base
+   and nags at ~9% real occupancy (audit F05). A genuine family switch (base name absent from the
+   live id) still restamps. (Tests: "window UNKNOWN…", "context_window: 0 …", "auto-corrects
+   upward…", "[1m] stamp survives…", "does NOT shield a genuine family switch")
 6. **Model-id matching is boundary-anchored.** `*opus-4-1|*opus-4-1-*` — never a bare `*opus-4-1*`,
    which would misclassify a future `opus-4-10` as 200K. (Tests: "future opus-4-10…")
 7. **`.reload/` never gets committed to the user's project.** `ensure_reload_dir` drops a
@@ -87,6 +99,28 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     `summarizing` behind, and the fresh session's first Stop ran a phantom pass 2 that armed the
     dead session's digest (audit F03). (Tests: "clear purges the leaked handshake", "resume keeps
     a mid-flight handshake"; e2e cycle 6.)
+11. **The ownership guard never blocks and never gates.** `claim-digest.sh` and the PreToolUse
+    hook exit 0 unconditionally; SessionStart warns on an incoherent arm but always rehydrates. A
+    guard that can fail the snapshot it guards is worse than the loss it prevents, and gating
+    rehydrate on id equality is the v0.1.5 bug (invariant 3). (Tests: "permits the write"
+    (`tests/test-claim-digest.sh`), "incoherent arm STILL rehydrates" (`tests/test-hooks.sh`);
+    e2e cycle 7.)
+12. **Owner identity lives in the artifact, never in a shared slot.** The digest's `session_id`
+    frontmatter and `pending`'s file content carry it. A directory-global owner marker is
+    overwritten by whichever session starts last and identifies neither party — the original defect
+    one level up (spec §4.2.1, rejected). (Tests: "digest_owner: …" (`tests/test-claim-digest.sh`),
+    "arm ownership: …" (`tests/test-hooks.sh`).)
+13. **Compare lineage, not identity — and never against this session's own id.** `/clear` mints a
+    fresh session id every time, so *any* check of "is this artifact mine?" is false on the
+    plugin's own primary path. The first cut of the guard did exactly that and warned on 100% of
+    ordinary `/clear` rehydrations while cutting an unbounded side-file per reset (caught in
+    whole-branch review, reproduced live, fixed pre-release). Two rules replace it: SessionStart
+    **claims** the digest it rehydrates (rewrites frontmatter `session_id` to its own id —
+    frontmatter-scoped, atomic, silent on failure), and the arm warning fires on **incoherence**
+    (`ARM_OWNER != DIGEST_OWNER`), which cannot arise from one session. Before adding any new id
+    comparison, state which side rotates across a reset. (Tests: "coherent arm warns nothing",
+    "second clear also silent (false positive does not reappear)", "incoherent arm warns"
+    (`tests/test-hooks.sh`); e2e single-session lifecycle cycle. Spec §4.2.3, corrected.)
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -130,8 +164,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
-| `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1 + reset paths, both test files' alias cases |
+| `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1, both test files' alias cases |
 | Anything in `hooks/hooks.json` | plugin must not ALSO declare hooks in plugin.json (duplicate-hooks load error — v0.1.2 regression) |
+| `claim-digest.sh` decision logic | `tests/test-claim-digest.sh`, e2e cycle 7, README "Known limitations" |
+| `pretooluse-hook.sh` or its `hooks.json` entry | plugin must not ALSO declare hooks in `plugin.json`; `tests/test-claim-digest.sh` |
+| `PENDING` being a stamped file rather than a `touch` | `stop-hook.sh:69`, `precompact-hook.sh:24`, `sessionstart-hook.sh` arm-owner block, both test files |
+| `context_owner_window` semantics (default 14400, 0=off) | `lib.sh` `owner_window()`, `scripts/reload-config.sh`, `commands/reload-budget.md`, README, `tests/test-config.sh` |
 
 ## How to change things safely
 
@@ -157,9 +195,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 
 - `lib.sh` is **sourced**, and its `exit 0` (missing jq) intentionally exits the *calling hook*.
   Don't "fix" that into a `return`.
-- The `summarizing`/`pending` markers are **per-project, not per-session**: two concurrent
-  sessions in one repo can consume each other's arms. Known, documented, accepted (README
-  "Known limitations"). Do not try to fix it with session ids in the digest — see invariant 3.
+- The markers under `.reload/` are **per-project, not per-session**. As of 0.3 the two that can
+  cause real harm are *detected*: a foreign live digest is side-filed with a warning, and a
+  foreign arm rehydrates with a warning (never suppressed — invariant 3 still holds; the
+  comparison may warn, never gate). `summarizing`, `notified`, and `model` remain shared and
+  accepted. Detection is not isolation: the actual fix is one session per working directory
+  (README "Known limitations"). Do not gate rehydration on the digest's session id — invariant 3.
 - SessionStart fires on `resume` too: an armed digest is injected (and consumed) into a resumed
   session that still has its context. Redundant but harmless; removing `resume` from the matcher
   would drop the model/window stamp on resume, which Stop needs. Accepted trade-off.

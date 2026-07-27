@@ -48,6 +48,106 @@ kv() {
 }
 cfg() { kv "$1" "$CONFIG"; }
 
+# --- concurrent-session ownership (see docs/spec/concurrent-sessions.md §4.2) ---
+#
+# Identity lives IN the artifact, never in a shared marker beside it: a
+# directory-global owner file is overwritten by whichever session starts last,
+# so it identifies neither the incumbent nor the writer — the same defect as the
+# unowned digest it would be guarding (spec §4.2.1, rejected alternative).
+
+OWNER_WINDOW_DEFAULT=14400   # 4h, in seconds
+
+# True only when the digest carries a COMPLETE frontmatter region: `---` on line
+# 1 and a closing `---` below it. An opener with no closer is not "frontmatter
+# running to EOF" — it is a digest with no frontmatter at all, and every line
+# after it is untrusted body (invariant 8). Treating it as frontmatter let a body
+# line reading `session_id: …` be read as the owner AND rewritten in place, which
+# is precisely the corruption the body-scoping exists to prevent. The digest is
+# model-written under a line budget, so a dropped closing fence or a truncated
+# mid-write is an ordinary failure, not a contrived one.
+frontmatter_closed() {
+  [ -f "$DIGEST" ] || return 1
+  awk '
+    NR==1 && $0 != "---" { exit 1 }        # no opener: no frontmatter
+    NR>1  && $0 == "---" { ok=1; exit }    # closer found
+    END { exit ok ? 0 : 1 }                # opened but never closed -> none
+  ' "$DIGEST" 2>/dev/null
+}
+
+# The digest's stamped owner, or "" when absent/empty/un-parseable. An empty
+# result means UNDETECTABLE, not "safe" — callers proceed silently (fail-open).
+#
+# NOT kv(): that greps ^session_id: anywhere in the file, and a digest BODY is
+# model-written and untrusted (invariant 8) — an "Open questions" bullet reading
+# `session_id: whatever` would be picked up as the owner. Scope to the YAML
+# frontmatter: start at the opening ---, stop at the closing one. One awk pass.
+digest_owner() {
+  [ -f "$DIGEST" ] || return 0
+  frontmatter_closed || return 0
+  awk '
+    NR==1 && $0 != "---" { exit }          # no frontmatter at all
+    NR>1 && $0 == "---"  { exit }          # closing fence: stop before the body
+    /^session_id:/ {
+      sub(/^session_id:[[:space:]]*/, "")
+      sub(/[[:space:]]+$/, "")
+      gsub(/^"|"$/, "")
+      print; exit
+    }
+  ' "$DIGEST" 2>/dev/null
+}
+
+# Rewrite the digest's frontmatter session_id to NEW_ID. Called by SessionStart
+# once it has rehydrated a digest: this session now carries that working
+# thread, so it claims it — the next /snapshot then sees INCUMBENT==WRITER and
+# stays silent, which is what makes an ordinary /clear (which mints a fresh id
+# every time) idempotent instead of tripping the guard on its own primary path.
+#
+# Same frontmatter scoping as digest_owner(): the BODY is model-written and
+# untrusted (invariant 8), so a body line that happens to start with
+# `session_id:` must survive byte-identical. Only the frontmatter key is ever
+# a rewrite target.
+#
+# Fail-open like claim-digest.sh: atomic temp file + mv, and ANY failure along
+# the way (awk error, unwritable dir, mv failure) leaves $DIGEST exactly as it
+# was and returns quietly — this must never be able to destroy or truncate a
+# digest. Callers must never gate an exit on this (invariant 3) — it only
+# records ownership, it does not decide whether to rehydrate.
+claim_digest() {
+  local new_id="$1"
+  [ -n "$new_id" ] || return 0
+  [ -f "$DIGEST" ] || return 0
+  # No COMPLETE frontmatter region -> nothing to claim; leave the digest
+  # untouched. head -1 alone accepted an unterminated fence, and the awk below
+  # then rewrote the first body line matching ^session_id: (see
+  # frontmatter_closed above).
+  frontmatter_closed || return 0
+
+  local tmp="$DIGEST.claim.$$"
+  if awk -v id="$new_id" '
+    NR==1 { print; if ($0 != "---") { body=1 }; next }  # no opening fence -> never in frontmatter
+    body { print; next }                                # past the closing fence: verbatim, never rescanned
+    $0 == "---" { print; body=1; next }                 # closing fence
+    /^session_id:/ && !replaced {
+      print "session_id: \"" id "\""
+      replaced=1
+      next
+    }
+    { print }
+  ' "$DIGEST" > "$tmp" 2>/dev/null && mv "$tmp" "$DIGEST" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null   # never leave a truncated partial behind
+  return 0
+}
+
+# Freshness window in seconds. A non-negative integer in config wins; anything
+# else (unset, garbage, negative) falls back to the default. 0 disables the
+# check entirely, matching the context_budget_pct: 0 convention.
+owner_window() {
+  local w; w="$(cfg context_owner_window)"
+  [[ "$w" =~ ^[0-9]+$ ]] && printf '%s' "$w" || printf '%s' "$OWNER_WINDOW_DEFAULT"
+}
+
 # Resolve a model id to its context window in tokens. Current-generation
 # main-session models — Opus 4.6/4.7/4.8, Sonnet 4.6, the 5-series (Fable/Mythos/
 # Sonnet 5/Opus 5), and any "[1m]" id — ship a 1M window at standard pricing.

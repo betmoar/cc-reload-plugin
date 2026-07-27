@@ -56,4 +56,17 @@ ck "checkpoint accepted (exit 0)" 'true'
 ck "checkpoint normalized to snapshot on write" '[ "$(rc get context_budget_mode)" = "snapshot" ]'
 rc set context_budget_mode notify >/dev/null
 
+echo "== context_owner_window: accepted, validated, normalized =="
+OUT="$(rc set context_owner_window 3600)"
+ck "sets a numeric window" 'grep -q "^context_owner_window: 3600$" "$TMP/.reload/config"'
+ck "reads back" '[ "$(rc get context_owner_window)" = "3600" ]'
+ck "off normalizes to 0" 'rc set context_owner_window off >/dev/null; [ "$(rc get context_owner_window)" = "0" ]'
+ck "0 is valid (disables)" 'rc set context_owner_window 0 >/dev/null; [ $? -eq 0 ]'
+ck "rejects garbage" '! rc set context_owner_window abc 2>/dev/null'
+ck "rejects negative" '! rc set context_owner_window -5 2>/dev/null'
+rc set context_owner_window 3600 >/dev/null
+rc set context_owner_window abc >/dev/null 2>&1
+ck "rejected value leaves config intact" '[ "$(rc get context_owner_window)" = "3600" ]'
+ck "unrelated keys preserved" 'rc set context_budget_pct 30 >/dev/null; [ "$(rc get context_owner_window)" = "3600" ]'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

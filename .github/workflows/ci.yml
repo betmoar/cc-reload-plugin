@@ -26,7 +26,7 @@ jobs:
 
       - name: Syntax check shell
         run: |
-          for f in hooks/*.sh scripts/*.sh; do bash -n "$f"; done
+          for f in hooks/*.sh scripts/*.sh tests/*.sh; do bash -n "$f"; done
 
       - name: Shellcheck
         run: shellcheck -S warning hooks/*.sh scripts/*.sh tests/*.sh
@@ -37,3 +37,4 @@ jobs:
           bash tests/test-statusline.sh
           bash tests/test-config.sh
           bash tests/test-e2e.sh
+          bash tests/test-claim-digest.sh

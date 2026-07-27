@@ -13,6 +13,7 @@
 #   reload-config.sh set context_budget_pct  <0-95 | off>
 #   reload-config.sh set context_budget_mode <notify | snapshot>   (legacy: checkpoint -> snapshot)
 #   reload-config.sh set context_window      <tokens >= 1000>
+#   reload-config.sh set context_owner_window <seconds | off>   (default 14400)
 #
 # Exit: 0 ok; 2 usage/validation error (message on stderr, config untouched).
 set -uo pipefail
@@ -26,8 +27,8 @@ die(){ printf 'reload-config: %s\n' "$1" >&2; exit 2; }
 MODE="${1:-}"; KEY="${2:-}"
 case "$MODE" in get|set) ;; *) die "usage: reload-config.sh get|set <key> [value]" ;; esac
 case "$KEY" in
-  context_budget_pct|context_budget_mode|context_window) ;;
-  *) die "unknown key '$KEY' (known keys: context_budget_pct, context_budget_mode, context_window)" ;;
+  context_budget_pct|context_budget_mode|context_window|context_owner_window) ;;
+  *) die "unknown key '$KEY' (known keys: context_budget_pct, context_budget_mode, context_window, context_owner_window)" ;;
 esac
 
 if [ "$MODE" = "get" ]; then
@@ -56,6 +57,13 @@ case "$KEY" in
   context_window)
     { [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 1000 ]; } \
       || die "context_window must be a token count >= 1000 (got '$VAL'), e.g. 1000000 for a 1M-window model"
+    ;;
+  context_owner_window)
+    # Seconds. 0 (or `off`) disables the concurrent-session ownership check,
+    # matching the context_budget_pct: 0 convention.
+    [ "$VAL" = "off" ] && VAL=0
+    [[ "$VAL" =~ ^[0-9]+$ ]] \
+      || die "context_owner_window must be seconds >= 0 or 'off' (got '$VAL'); default 14400 (4h), 0 disables the cross-session digest check"
     ;;
 esac
 

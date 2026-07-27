@@ -37,11 +37,63 @@ esac
 # time, so the armed digest is always stamped with the PRIOR id and an id-equality
 # check would suppress the banner on its primary trigger 100% of the time. The arm
 # is self-scoping (per-project dir, consumed on use), so identity adds nothing.
+# (Since 0.3 we DO compare ids — but only to WARN, and NOT against this
+# session's own id: see the arm-coherence block below for why that comparison
+# is meaningless here. The gate is still the arm alone. "Warn" and "gate" are
+# different things: the second is the v0.1.5 bug. Never let a comparison reach
+# an `exit`.)
 [ -f "$PENDING" ] || exit 0
 [ -f "$DIGEST" ]  || { rm -f "$PENDING"; exit 0; }
 
-BODY="$(cat "$DIGEST")"
+# Arm coherence (spec §4.2.3, revised — lineage not identity). WARNS on
+# incoherence; NEVER gates on it (invariant 3).
+#
+# ARM_OWNER != SESSION_ID is NOT a collision signal — it is the definition of
+# /clear, which mints a fresh session id every time. Comparing the arm's owner
+# against THIS session's incoming id would fire on every ordinary reset for a
+# single user in a single directory (the defect this revision fixes).
+#
+# The real signal is whether the arm and the digest AGREE: whoever armed
+# should also be who wrote the digest.
+#   ARM_OWNER == DIGEST_OWNER            -> coherent handoff (ordinary /clear,
+#       or a second session that armed its own snapshot). Silent.
+#   ARM_OWNER != DIGEST_OWNER (both set) -> INCOHERENT: session A armed, then
+#       session B overwrote the digest beside that arm. The arm now points at
+#       a thread its armer never wrote — two sessions sharing this directory.
+#       Warn.
+#   either side empty                    -> undetectable (pre-0.3 arm, or no
+#       runtime id). Silent — per spec §4.4 limit 1.
+ARM_OWNER="$(cat "$PENDING" 2>/dev/null)"
+SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)"
+DIGEST_OWNER_AT_REHYDRATE="$(digest_owner)"
+INCOHERENT_ARM=""
+[ -n "$ARM_OWNER" ] && [ -n "$DIGEST_OWNER_AT_REHYDRATE" ] && [ "$ARM_OWNER" != "$DIGEST_OWNER_AT_REHYDRATE" ] && INCOHERENT_ARM=1
+
 rm -f "$PENDING"   # consume the arm
+
+# This session now carries the working thread it just rehydrated: claim the
+# digest by rewriting its frontmatter session_id to our own id. The next
+# /snapshot then sees INCUMBENT==WRITER and stays silent — this is what makes
+# the ordinary /clear path (S1 arms+writes -> S2 rehydrates+claims -> S2 arms+
+# writes -> ...) idempotent instead of tripping claim-digest.sh on every reset.
+# A genuinely foreign write that never passed through this handoff still
+# collides normally. Happens AFTER the rehydrate decision (the PENDING/DIGEST
+# existence checks above) — never gates anything, fails open and silent
+# (claim_digest, hooks/lib.sh).
+#
+# BODY is captured AFTER this call, not before: it becomes the injected
+# additionalContext, and it must be byte-consistent with what actually landed
+# on disk (the same reason INTENT/DONE_LINE/NEXT_LINE below all re-read
+# "$DIGEST" live rather than reusing a pre-claim snapshot). Reading BODY first
+# would inject a digest showing the OLD owner while the file on disk already
+# shows the new one — cosmetically wrong and a trap for anything that later
+# diffs "what the model saw" against "what's on disk". No external process
+# writes .reload/session.md concurrently with this hook (SessionStart is not
+# reentrant within one project dir's synchronous hook invocation), so there is
+# no read/write race to guard against here beyond claim_digest's own
+# temp-file+mv atomicity.
+claim_digest "$SESSION_ID"
+BODY="$(cat "$DIGEST")"
 
 # systemMessage fires AFTER /clear's screen wipe and is shown in the blank
 # terminal — it is the reliable visible signal for all trigger sources. Keep it.
@@ -66,6 +118,7 @@ NEXT_LINE="$(_first_line 'Next concrete step')"
 INFLIGHT_LINE="$(_first_bullet 'In flight')"
 
 MSG="🔄 cc-reload (${SOURCE})"
+[ -n "$INCOHERENT_ARM" ] && MSG="⚠️ this arm was set by a different session than the one that wrote the digest (armed by $ARM_OWNER, digest by $DIGEST_OWNER_AT_REHYDRATE) — another session is sharing this directory; verify before trusting it | $MSG"
 [ -n "$INTENT" ] && MSG="$MSG — $(_truncate "$INTENT" 80)"
 if [ -n "$DONE_LINE" ]; then
   MSG="$MSG | ✓ $(_truncate "$DONE_LINE" 60)"

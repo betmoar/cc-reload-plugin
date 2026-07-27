@@ -42,6 +42,12 @@ touch "$TMP/.reload/pending"
 OUT="$(run sessionstart-hook.sh '{"session_id":"S1","source":"clear"}')"
 ck "SessionStart stands down (no output)" '[ -z "$OUT" ]'
 ck "did not consume marker while stood down" '[ -f "$TMP/.reload/pending" ]'
+mkdir -p "$TMP/.repete"; printf -- '---\nactive: true\n---\n' > "$TMP/.repete/loop.local.md"
+touch "$TMP/.reload/pending"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "Stop stands down under a repete loop" '[ -z "$OUT" ]'
+OUT="$(run precompact-hook.sh '{"session_id":"S1","trigger":"manual"}')"
+ck "PreCompact stands down under a repete loop" '[ -z "$OUT" ]'
 rm -rf "$TMP/.repete"
 
 echo "== PreCompact: arms + ensures a digest =="
@@ -283,6 +289,49 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "live model refreshes stamp to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
 ck "50k/200K=25% > 5% budget -> triggers" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
 
+echo "== Stop hook: [1m] stamp survives a bare-id transcript refresh (same model) =="
+# The transcript never carries the "[1m]" alias suffix. A session stamped
+# claude-sonnet-4-5[1m] (1M) whose transcript says claude-sonnet-4-5-20250929
+# is the SAME model — restamping the bare id would downgrade the window to the
+# 200K base and nag at 5x the real occupancy (audit F05).
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"
+printf '{"message":{"role":"assistant","model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":100000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "[1m] stamp keeps 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+ck "[1m] stamp not overwritten by bare id" 'grep -q "claude-sonnet-4-5\[1m\]" "$TMP/.reload/model"'
+ck "100k/1M=10% < 45% -> silent (no false nudge)" '[ -z "$OUT" ]'
+
+echo "== Stop hook: alias-form [1m] stamp (sonnet[1m]) also survives =="
+printf 'model: sonnet[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "alias sonnet[1m] keeps 1M window" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+ck "alias form stays silent under real budget" '[ -z "$OUT" ]'
+
+echo "== Stop hook: the [1m] shield is boundary-anchored (invariant 6, applied to BASE) =="
+# claude-sonnet-4-5 is a literal PREFIX of a future claude-sonnet-4-50, so an
+# unanchored substring test shields a genuinely different model and pins the
+# stale [1m] stamp forever. Same collision shape invariant 6 already forbids in
+# model_window() ("future opus-4-10"), one level up. The boundary is "-": the
+# base must end at the id's end or at a literal dash.
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf '{"message":{"role":"assistant","model":"claude-sonnet-4-50-20260101","usage":{"input_tokens":100000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/notified"
+run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" >/dev/null
+ck "sonnet-4-50 is NOT shielded by a sonnet-4-5[1m] stamp" 'grep -q "claude-sonnet-4-50-20260101" "$TMP/.reload/model"'
+ck "the stale [1m] stamp is replaced, not pinned" '! grep -q "\[1m\]" "$TMP/.reload/model"'
+
+echo "== Stop hook: [1m] stamp does NOT shield a genuine family switch =="
+# sonnet[1m] stamped, but the live turn ran haiku (a real /model switch):
+# the base "sonnet" is absent from the live id, so the restamp proceeds -> 200K.
+printf 'model: sonnet[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"
+printf '{"message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":100000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$TMP/t.jsonl"
+rm -f "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "family switch from [1m] stamp restamps to 200K" 'grep -q "window: 200000" "$TMP/.reload/model"'
+ck "100k/200K=50% >= 45% -> notifies" 'printf "%s" "$OUT" | jq -e ".systemMessage != null" >/dev/null'
+
 echo "== Stop notify (DEFAULT mode): over budget -> nudge only, never blocks, no handshake =="
 printf 'context_budget_pct: 45\ncontext_window: 1000000\n' > "$TMP/.reload/config"   # no mode key -> notify
 mktx 500000   # 50% >= 45%
@@ -334,5 +383,124 @@ ck "resume keeps the notify ladder" '[ -f "$TMP/.reload/notified" ]'
 OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
 ck "clear purges the leaked handshake" '[ ! -f "$TMP/.reload/summarizing" ]'
 ck "clear purges the notify ladder" '[ ! -f "$TMP/.reload/notified" ]'
+
+echo "== Arm ownership: PENDING carries the arming session's id =="
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+
+# PreCompact arms with its own id.
+run precompact-hook.sh '{"session_id":"S_PC","trigger":"manual"}' >/dev/null
+ck "precompact stamps the arm" '[ "$(cat "$TMP/.reload/pending")" = "S_PC" ]'
+
+echo "== Arm coherence (revised): compares the arm's owner against the DIGEST's owner, =="
+echo "== not against the rehydrating session's id — /clear mints a fresh id every time =="
+# NOTE: the OLD suite tested "ARM_OWNER != SESSION_ID -> warn". That comparison is
+# exactly the defect this revision fixes — S2 is the incoming session, not the
+# incumbent's collaborator, so of COURSE it differs from S1's arm on every /clear.
+# The assertions below replace that comparison with ARM_OWNER vs DIGEST_OWNER.
+
+echo "-- ordinary /clear lineage: pending=S1, digest owner S1, incoming id S2 --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S1' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "coherent arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "coherent arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "digest is claimed by the rehydrating session (S2)" 'grep -q "^session_id: \"S2\"" "$TMP/.reload/session.md"'
+
+echo "-- a second /clear, S2 -> S3, is likewise silent (the claim actually took) --"
+printf 'S2' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S3","source":"clear"}')"
+ck "second clear also silent (false positive does not reappear)" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "digest re-claimed by S3" 'grep -q "^session_id: \"S3\"" "$TMP/.reload/session.md"'
+
+echo "-- incoherent arm: session A armed, but B's write landed under that arm (v0.1.5 guard still holds) --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S_B"\nupdated_at: "x"\nintent: "written by B"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S_A' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_C","source":"clear"}')"
+ck "incoherent arm STILL rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "incoherent arm warns" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "warning names the armer" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"S_A\")" >/dev/null'
+ck "warning names the digest writer" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"S_B\")" >/dev/null'
+ck "incoherent arm still consumed" '[ ! -f "$TMP/.reload/pending" ]'
+
+echo "-- empty arm (pre-0.3, no id ever recorded on the arm side): rehydrates, no warning, digest untouched --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S_ORIG"\nupdated_at: "x"\nintent: "untouched"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+touch "$TMP/.reload/pending"    # empty arm: no owner ever stamped
+OUT="$(run sessionstart-hook.sh '{"source":"clear"}')"   # no session_id in payload either
+ck "empty arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "empty arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "empty arm + no incoming id -> digest stamp untouched" 'grep -q "^session_id: \"S_ORIG\"" "$TMP/.reload/session.md"'
+
+echo "-- no runtime id on input: arm IS set, but the payload carries no session_id -> stamp untouched --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S_X"\nupdated_at: "x"\nintent: "untouched too"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S_X' > "$TMP/.reload/pending"     # coherent arm (matches digest owner)
+OUT="$(run sessionstart-hook.sh '{"source":"clear"}')"    # no session_id field at all
+ck "no runtime id still rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "no runtime id warns nothing (coherent arm)" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "no runtime id -> claim skipped, stamp untouched" 'grep -q "^session_id: \"S_X\"" "$TMP/.reload/session.md"'
+
+echo "-- untrusted body: a body line starting session_id: must NOT be rewritten, only frontmatter --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n## Open questions & risks\nsession_id: NOT-THE-OWNER (model-written, untrusted)\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S1' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "frontmatter session_id claimed" 'grep -q "^session_id: \"S2\"" "$TMP/.reload/session.md"'
+ck "body's session_id: line survives byte-identical" 'grep -qF "session_id: NOT-THE-OWNER (model-written, untrusted)" "$TMP/.reload/session.md"'
+
+echo "-- unterminated fence: no frontmatter region exists, so NOTHING may be rewritten --"
+# The closed-fence case above proves the body is safe when the fence is well
+# formed. This proves it when the model drops the closing --- (or is truncated
+# mid-write): the old code treated "opened, never closed" as frontmatter running
+# to EOF, so the first body line starting session_id: was both READ as the owner
+# (feeding it into the user-visible warning) and REWRITTEN in place.
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nintent: "no closing fence"\n## Open questions & risks\nsession_id: NOT-THE-OWNER\n' > "$TMP/.reload/session.md"
+printf 'S_ARMER' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_NEW","source":"clear"}')"
+ck "unterminated fence: body line NOT rewritten" 'grep -qF "session_id: NOT-THE-OWNER" "$TMP/.reload/session.md"'
+ck "unterminated fence: no claim stamp injected" '! grep -qF "session_id: \"S_NEW\"" "$TMP/.reload/session.md"'
+ck "unterminated fence: body id never named as digest owner" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT-THE-OWNER\")" >/dev/null'
+ck "unterminated fence still rehydrates (fail-open, invariant 3)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext != null" >/dev/null'
+
+echo "== CLAUDE.md's invariant-13 test citations actually resolve =="
+# The invariant list's own convention is "each has a named test", i.e. the
+# quoted strings must be greppable. They were paraphrases and matched nothing,
+# so anyone auditing invariant 13 found no guard where the doc promised three.
+C="$(cd "$H/.." && pwd)/CLAUDE.md"
+SUITE="${BASH_SOURCE[0]}"
+# Each citation must appear BOTH in CLAUDE.md and as a real label in this file.
+# No loop with `exit` — ck runs its argument under eval, so a bare exit would
+# kill the suite instead of failing the assertion.
+cited(){ grep -qF "$1" "$C" && grep -qF "ck \"$1" "$SUITE"; }
+ck "invariant 13 cites a real label: coherent arm warns nothing" 'cited "coherent arm warns nothing"'
+ck "invariant 13 cites a real label: second clear also silent" 'cited "second clear also silent"'
+ck "invariant 13 cites a real label: incoherent arm warns" 'cited "incoherent arm warns"'
+
+echo "== Structural guard: no id-equality condition governs an exit (v0.1.5) =="
+# Spec criterion 3's second prong. The behavioral tests above prove rehydration
+# happens on the inputs we thought to try; this proves nobody re-introduced the
+# gate itself. An id comparison may set a warning flag — it must never reach exit.
+# The comparison basis changed from ARM_OWNER/SESSION_ID to
+# ARM_OWNER/DIGEST_OWNER_AT_REHYDRATE (fixing the defect); the structural
+# invariant it guards — no id comparison reaches an exit — did not.
+ck "no id comparison guards an exit" '! grep -nE "(ARM_OWNER|SESSION_ID|DIGEST_OWNER_AT_REHYDRATE).*(&&|\|\|).*exit|exit.*(ARM_OWNER|SESSION_ID|DIGEST_OWNER_AT_REHYDRATE)" "$H/sessionstart-hook.sh"'
+
+echo "== Stop pass 2 stamps the arm from its own payload =="
+rm -f "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/summarizing"
+touch "$TMP/.reload/session.md"     # fresher than the marker
+OUT="$(run stop-hook.sh "{\"session_id\":\"S_STOP\",\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "stop pass2 stamps the arm" '[ "$(cat "$TMP/.reload/pending")" = "S_STOP" ]'
+
+# Fallback: no session_id field, but a transcript path whose basename is the id.
+rm -f "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/summarizing"; touch "$TMP/.reload/session.md"
+printf '{}\n' > "$TMP/S_FALLBACK.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/S_FALLBACK.jsonl\"}")"
+ck "stop falls back to transcript basename" '[ "$(cat "$TMP/.reload/pending")" = "S_FALLBACK" ]'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

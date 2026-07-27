@@ -33,6 +33,16 @@ repete_active && exit 0
 
 HOOK_INPUT="$(cat)"
 
+# This session's id, for arm ownership (spec §4.2.3). Stop's payload carries
+# session_id; the transcript filename IS the session id (verified), so its
+# basename is an equivalent fallback if the field is ever absent. Parsed HERE,
+# before pass 2, because pass 2 must not depend on the transcript being readable.
+SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)"
+if [ -z "$SESSION_ID" ]; then
+  _tp="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)"
+  [ -n "$_tp" ] && SESSION_ID="$(basename "$_tp" .jsonl)"
+fi
+
 # pass 2: a snapshot turn just ran (the summarizing marker is set).
 # Complete the cycle here — arm the reload and yield — BEFORE any budget or
 # transcript gating. Pass 1 already committed us to a reset, so this must not
@@ -50,7 +60,16 @@ if [ -f "$SUMMARIZING" ]; then
   [ -f "$DIGEST" ] && [ "$DIGEST" -nt "$SUMMARIZING" ] && FRESH=1
   rm -f "$SUMMARIZING"
   if [ -f "$DIGEST" ]; then
-    touch "$PENDING"
+    # Stamp the arm's owner when we have one. When we do NOT, fall back to the
+    # literal `touch` rather than writing an empty file: an empty arm must keep
+    # meaning exactly what it means today (a pre-0.3 / un-owned arm), or the
+    # unknown-id case silently becomes the new default and the ownership tests
+    # would be asserting the fallback rather than the feature.
+    if [ -n "$SESSION_ID" ]; then
+      printf '%s' "$SESSION_ID" > "$PENDING" 2>/dev/null || touch "$PENDING" 2>/dev/null
+    else
+      touch "$PENDING" 2>/dev/null
+    fi
     if [ -n "$FRESH" ]; then
       jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically (you'll see a '🔄 restored' line; run /reload for the full sitrep)." \
         '{systemMessage:$m}'
@@ -106,11 +125,41 @@ fi
 # detected. The last assistant turn carries the model id that actually ran —
 # if it differs from the stamped value, rewrite both model and window so this
 # and all future turns compute occupancy against the right window.
+#
+# EXCEPT: the transcript id is LOSSY w.r.t. the "[1m]" alias. A session
+# configured as e.g. `claude-sonnet-4-5[1m]` (or the alias form `sonnet[1m]`)
+# runs with a 1M window, but message.model carries only the bare API id
+# (`claude-sonnet-4-5-…`), which model_window() maps to the 200K base — so a
+# naive restamp would downgrade the window 5x and nag from ~9% real occupancy.
+# If the stamped model is a "[1m]" form of the SAME model (its base name
+# appears in the live id), keep the stamp; a genuine /model switch to a
+# different family still restamps because the base no longer matches.
+#
+# The base match is BOUNDARY-ANCHORED, for the reason invariant 6 anchors
+# model_window(): claude-sonnet-4-5 is a literal prefix of a future
+# claude-sonnet-4-50, and a bare *"$BASE"* would shield that genuinely
+# different model — pinning a stale [1m] stamp and its window forever, the
+# mirror image of the F05 downgrade this shield exists to prevent. A model id
+# segment ends at the id's end or at a "-", so both forms the stamp can take
+# are covered: a full id (claude-sonnet-4-5, a PREFIX of the live id) and an
+# alias (sonnet, which appears MID-id in claude-sonnet-4-5-…). Hence the
+# leading *"$BASE" rather than an exact prefix match.
 if [ -n "$LIVE_MODEL" ]; then
   STAMPED_MODEL="$(kv model "$MODELFILE")"
   if [ "$LIVE_MODEL" != "$STAMPED_MODEL" ]; then
-    ensure_reload_dir
-    printf 'model: %s\nwindow: %s\n' "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")" > "$MODELFILE"
+    RESTAMP=1
+    case "$STAMPED_MODEL" in
+      *"[1m]"*)
+        BASE="${STAMPED_MODEL%%\[*}"   # claude-sonnet-4-5[1m] -> claude-sonnet-4-5; sonnet[1m] -> sonnet
+        if [ -n "$BASE" ]; then
+          case "$LIVE_MODEL" in *"$BASE"|*"$BASE"-*) RESTAMP="" ;; esac
+        fi
+        ;;
+    esac
+    if [ -n "$RESTAMP" ]; then
+      ensure_reload_dir
+      printf 'model: %s\nwindow: %s\n' "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")" > "$MODELFILE"
+    fi
   fi
 fi
 
@@ -158,7 +207,7 @@ Context is ~'"$OCCUPANCY"'% of the window (budget '"$PCT"'%). Reset before rot s
 
 Write .reload/session.md (overwrite it), tight — under ~30 lines — with frontmatter and four sections:
   ---
-  session_id: "<this session id, if known; else omit>"
+  session_id: "<run: echo "$CLAUDE_CODE_SESSION_ID" — paste that value; if empty, use an empty string>"
   updated_at: "<ISO8601>"
   intent: "<one line: what this session is doing>"
   ---
