@@ -54,4 +54,94 @@ printf 'context_owner_window: garbage\n' > "$TMP/.reload/config"
 ck "garbage falls back to default" '[ "$(libcall owner_window)" = "14400" ]'
 rm -f "$TMP/.reload/config"
 
+claim(){ CLAUDE_PROJECT_DIR="$TMP" bash "$ROOT/scripts/claim-digest.sh" "$@"; }
+fresh_digest(){ # fresh_digest <owner-id>  -> a digest owned by <owner-id>, mtime now
+  printf -- '---\nsession_id: "%s"\nupdated_at: "x"\nintent: "work by %s"\n---\n## Done this stretch\n- BODY-%s\n' \
+    "$1" "$1" "$1" > "$TMP/.reload/session.md"
+}
+reset_reload(){ rm -f "$TMP"/.reload/session.*.md "$TMP/.reload/session.md" "$TMP/.reload/config"; }
+
+echo "== claim-digest: foreign fresh incumbent is side-filed =="
+reset_reload; fresh_digest S_A
+OUT="$(claim S_B)"
+ck "side-file created" '[ -f "$TMP/.reload/session.S_A.md" ]'
+ck "side-file holds the incumbent body" 'grep -q "BODY-S_A" "$TMP/.reload/session.S_A.md"'
+ck "warning names the incumbent" 'printf "%s" "$OUT" | grep -q "S_A"'
+ck "exit 0" 'claim S_B >/dev/null; [ $? -eq 0 ]'
+ck "digest itself untouched (caller writes it)" 'grep -q "BODY-S_A" "$TMP/.reload/session.md"'
+
+echo "== claim-digest: collision appends mtime =="
+reset_reload; fresh_digest S_A
+claim S_B >/dev/null                      # first side-file
+fresh_digest S_A                          # incumbent returns
+claim S_B >/dev/null                      # second collision
+ck "a second side-file exists" '[ "$(ls "$TMP"/.reload/session.S_A.*.md 2>/dev/null | wc -l)" -ge 1 ]'
+
+echo "== claim-digest: silent when un-owned or self or stale or disabled =="
+# NOTE: every "silent" assertion is gated on `have scripts/claim-digest.sh` — a
+# missing script also produces empty stdout and no side-file, so an ungated
+# assertion here passes BEFORE the implementation exists (false-green).
+reset_reload; fresh_digest ""
+ck "empty incumbent id -> silent" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ] && [ ! -f "$TMP/.reload/session..md" ]'
+
+reset_reload; fresh_digest S_B
+ck "self-owned -> silent" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ] && [ ! -f "$TMP/.reload/session.S_B.md" ]'
+
+reset_reload; fresh_digest S_A
+ck "empty writer id -> silent" 'have scripts/claim-digest.sh && [ -z "$(claim "")" ]'
+
+reset_reload; fresh_digest S_A
+touch -t 202001010000 "$TMP/.reload/session.md"      # far outside any window
+ck "stale incumbent -> silent" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ] && [ ! -f "$TMP/.reload/session.S_A.md" ]'
+
+reset_reload; fresh_digest S_A
+printf 'context_owner_window: 0\n' > "$TMP/.reload/config"
+ck "window 0 disables -> silent" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ] && [ ! -f "$TMP/.reload/session.S_A.md" ]'
+reset_reload
+
+echo "== claim-digest: the 4h default-window boundary (spec criterion 6) =="
+# The criterion's actual claim is about the DEFAULT window, not an extreme date.
+reset_reload; fresh_digest S_A
+touch -t "$(date -v-239M +%Y%m%d%H%M 2>/dev/null || date -d '239 minutes ago' +%Y%m%d%H%M)" "$TMP/.reload/session.md"
+ck "3h59m old -> side-filed" 'claim S_B >/dev/null; [ -f "$TMP/.reload/session.S_A.md" ]'
+
+reset_reload; fresh_digest S_A
+touch -t "$(date -v-241M +%Y%m%d%H%M 2>/dev/null || date -d '241 minutes ago' +%Y%m%d%H%M)" "$TMP/.reload/session.md"
+ck "4h01m old -> silent" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ] && [ ! -f "$TMP/.reload/session.S_A.md" ]'
+reset_reload
+
+echo "== claim-digest: stands down for a cc-repete loop (spec criterion 9) =="
+fresh_digest S_A
+mkdir -p "$TMP/.repete"; printf -- '---\nactive: true\n---\n' > "$TMP/.repete/loop.local.md"
+ck "repete active -> no side-file" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ] && [ ! -f "$TMP/.reload/session.S_A.md" ]'
+rm -rf "$TMP/.repete"
+ck "repete gone -> guard resumes" 'claim S_B >/dev/null; [ -f "$TMP/.reload/session.S_A.md" ]'
+reset_reload
+
+echo "== claim-digest: a hostile owner id cannot escape .reload/ =="
+# The frontmatter is model-written and untrusted. cc-operator hit exactly this
+# (ops-verdict.sh:276 records a 2026-07-10 path traversal through the same door).
+reset_reload
+printf -- '---\nsession_id: "../../ESCAPED"\nupdated_at: "x"\nintent: "hostile"\n---\n## Done this stretch\n- BODY-EVIL\n' > "$TMP/.reload/session.md"
+claim S_B >/dev/null
+ck "no file written outside .reload/" '[ ! -e "$TMP/../ESCAPED.md" ] && [ ! -e "$TMP/ESCAPED.md" ]'
+reset_reload
+
+echo "== claim-digest: no digest at all -> silent, exit 0 =="
+ck "absent digest silent" 'have scripts/claim-digest.sh && [ -z "$(claim S_B)" ]'
+ck "absent digest exits 0" 'have scripts/claim-digest.sh && { claim S_B >/dev/null; [ $? -eq 0 ]; }'
+
+echo "== claim-digest: unwritable .reload still exits 0 and still warns (fail-open) =="
+if [ "$(id -u)" -eq 0 ]; then
+  echo "  SKIP: running as root — chmod 500 does not block root, assertion would be vacuous"
+else
+  fresh_digest S_A
+  chmod 500 "$TMP/.reload"
+  OUT="$(claim S_B)"; RC=$?
+  chmod 700 "$TMP/.reload"
+  ck "unwritable dir still exits 0" '[ "$RC" -eq 0 ]'
+  ck "unwritable dir still warns" 'printf "%s" "$OUT" | grep -q "could NOT be saved aside"'
+fi
+reset_reload
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
