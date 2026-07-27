@@ -78,6 +78,47 @@ digest_owner() {
   ' "$DIGEST" 2>/dev/null
 }
 
+# Rewrite the digest's frontmatter session_id to NEW_ID. Called by SessionStart
+# once it has rehydrated a digest: this session now carries that working
+# thread, so it claims it — the next /snapshot then sees INCUMBENT==WRITER and
+# stays silent, which is what makes an ordinary /clear (which mints a fresh id
+# every time) idempotent instead of tripping the guard on its own primary path.
+#
+# Same frontmatter scoping as digest_owner(): the BODY is model-written and
+# untrusted (invariant 8), so a body line that happens to start with
+# `session_id:` must survive byte-identical. Only the frontmatter key is ever
+# a rewrite target.
+#
+# Fail-open like claim-digest.sh: atomic temp file + mv, and ANY failure along
+# the way (awk error, unwritable dir, mv failure) leaves $DIGEST exactly as it
+# was and returns quietly — this must never be able to destroy or truncate a
+# digest. Callers must never gate an exit on this (invariant 3) — it only
+# records ownership, it does not decide whether to rehydrate.
+claim_digest() {
+  local new_id="$1"
+  [ -n "$new_id" ] || return 0
+  [ -f "$DIGEST" ] || return 0
+  # No frontmatter at all -> nothing to claim; leave the digest untouched.
+  [ "$(head -1 "$DIGEST" 2>/dev/null)" = "---" ] || return 0
+
+  local tmp="$DIGEST.claim.$$"
+  if awk -v id="$new_id" '
+    NR==1 { print; if ($0 != "---") { body=1 }; next }  # no opening fence -> never in frontmatter
+    body { print; next }                                # past the closing fence: verbatim, never rescanned
+    $0 == "---" { print; body=1; next }                 # closing fence
+    /^session_id:/ && !replaced {
+      print "session_id: \"" id "\""
+      replaced=1
+      next
+    }
+    { print }
+  ' "$DIGEST" > "$tmp" 2>/dev/null && mv "$tmp" "$DIGEST" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null   # never leave a truncated partial behind
+  return 0
+}
+
 # Freshness window in seconds. A non-negative integer in config wins; anything
 # else (unset, garbage, negative) falls back to the default. 0 disables the
 # check entirely, matching the context_budget_pct: 0 convention.

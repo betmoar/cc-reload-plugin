@@ -70,12 +70,24 @@ ck "warning names the incumbent" 'printf "%s" "$OUT" | grep -q "S_A"'
 ck "exit 0" 'claim S_B >/dev/null; [ $? -eq 0 ]'
 ck "digest itself untouched (caller writes it)" 'grep -q "BODY-S_A" "$TMP/.reload/session.md"'
 
-echo "== claim-digest: collision appends mtime =="
+echo "== claim-digest: a second claim with the SAME bytes is already preserved -> silent =="
+# /snapshot reaches this comparator twice for one write: the command's own
+# courtesy call, then PreToolUse on the Write it triggers. Byte-identical
+# incumbent content means the first call already preserved it — the second
+# call must not stamp a redundant mtime-suffixed copy or warn a second time.
+reset_reload; fresh_digest S_A
+claim S_B >/dev/null                      # first side-file: session.S_A.md
+OUT="$(claim S_B)"                        # second call, SAME incumbent bytes
+ck "still exactly one side-file" '[ "$(ls "$TMP"/.reload/session.S_A*.md 2>/dev/null | wc -l)" -eq 1 ]'
+ck "second identical call is silent" '[ -z "$OUT" ]'
+
+echo "== claim-digest: collision with DIFFERENT content appends mtime =="
 reset_reload; fresh_digest S_A
 claim S_B >/dev/null                      # first side-file
-fresh_digest S_A                          # incumbent returns
-claim S_B >/dev/null                      # second collision
-ck "a second side-file exists" '[ "$(ls "$TMP"/.reload/session.S_A.*.md 2>/dev/null | wc -l)" -ge 1 ]'
+printf -- '---\nsession_id: "S_A"\nupdated_at: "y"\nintent: "work by S_A, take 2"\n---\n## Done this stretch\n- BODY-S_A-v2\n' > "$TMP/.reload/session.md"
+touch "$TMP/.reload/session.md"           # ensure a distinct mtime for the suffix
+claim S_B >/dev/null                      # second collision, genuinely different bytes
+ck "a second, differently-named side-file exists" '[ "$(ls "$TMP"/.reload/session.S_A.*.md 2>/dev/null | wc -l)" -ge 1 ]'
 
 echo "== claim-digest: silent when un-owned or self or stale or disabled =="
 # NOTE: every "silent" assertion is gated on `have scripts/claim-digest.sh` — a
@@ -125,6 +137,11 @@ reset_reload
 printf -- '---\nsession_id: "../../ESCAPED"\nupdated_at: "x"\nintent: "hostile"\n---\n## Done this stretch\n- BODY-EVIL\n' > "$TMP/.reload/session.md"
 claim S_B >/dev/null
 ck "no file written outside .reload/" '[ ! -e "$TMP/../ESCAPED.md" ] && [ ! -e "$TMP/ESCAPED.md" ]'
+# The negative assertion above also passes if the script silently does nothing
+# at all (e.g. `tr -cd` regressed into a no-op that just skips the write). Pin
+# down what SHOULD have happened: the `../` is stripped down to the safe
+# charset and the side-file lands, by that sanitized name, inside .reload/.
+ck "sanitized filename exists inside .reload/" '[ -f "$TMP/.reload/session.ESCAPED.md" ]'
 reset_reload
 
 echo "== claim-digest: no digest at all -> silent, exit 0 =="

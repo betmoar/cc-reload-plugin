@@ -59,7 +59,18 @@ SAFE_ID="$(printf '%s' "$INCUMBENT" | tr -cd 'A-Za-z0-9_-')"
 [ -n "$SAFE_ID" ] || SAFE_ID="unknown"
 
 SIDE="$RELOAD_DIR/session.$SAFE_ID.md"
-[ -e "$SIDE" ] && SIDE="$RELOAD_DIR/session.$SAFE_ID.$MTIME.md"
+if [ -e "$SIDE" ]; then
+  # /snapshot reaches this comparator twice for one write (the command's own
+  # courtesy call, then PreToolUse on the Write it triggers). If the existing
+  # side-file already holds these exact bytes, this claim was already preserved
+  # — exit silently instead of stamping a second, mtime-suffixed copy and a
+  # second warning for what is really one collision. `cmp -s` is the portable
+  # byte-identical test (no GNU-only flags). Genuinely different content (a
+  # THIRD session, or the incumbent changed between calls) still falls through
+  # to the suffixed name below — that branch is for real collisions, not kept.
+  cmp -s "$DIGEST" "$SIDE" && exit 0
+  SIDE="$RELOAD_DIR/session.$SAFE_ID.$MTIME.md"
+fi
 
 # Two sessions can reach here at the same instant: a bare `[ -e ] && cp` is
 # TOCTOU, and both would cp to the same path, truncating the copy that exists to

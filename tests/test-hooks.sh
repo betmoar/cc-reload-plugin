@@ -379,29 +379,73 @@ printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n##
 run precompact-hook.sh '{"session_id":"S_PC","trigger":"manual"}' >/dev/null
 ck "precompact stamps the arm" '[ "$(cat "$TMP/.reload/pending")" = "S_PC" ]'
 
-# Same-session rehydrate: no warning.
-OUT="$(run sessionstart-hook.sh '{"session_id":"S_PC","source":"clear"}')"
-ck "own arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
-ck "own arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+echo "== Arm coherence (revised): compares the arm's owner against the DIGEST's owner, =="
+echo "== not against the rehydrating session's id — /clear mints a fresh id every time =="
+# NOTE: the OLD suite tested "ARM_OWNER != SESSION_ID -> warn". That comparison is
+# exactly the defect this revision fixes — S2 is the incoming session, not the
+# incumbent's collaborator, so of COURSE it differs from S1's arm on every /clear.
+# The assertions below replace that comparison with ARM_OWNER vs DIGEST_OWNER.
 
-# Cross-session arm: STILL rehydrates, but warns.
+echo "-- ordinary /clear lineage: pending=S1, digest owner S1, incoming id S2 --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S1' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "coherent arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "coherent arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "digest is claimed by the rehydrating session (S2)" 'grep -q "^session_id: \"S2\"" "$TMP/.reload/session.md"'
+
+echo "-- a second /clear, S2 -> S3, is likewise silent (the claim actually took) --"
+printf 'S2' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S3","source":"clear"}')"
+ck "second clear also silent (false positive does not reappear)" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "digest re-claimed by S3" 'grep -q "^session_id: \"S3\"" "$TMP/.reload/session.md"'
+
+echo "-- incoherent arm: session A armed, but B's write landed under that arm (v0.1.5 guard still holds) --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S_B"\nupdated_at: "x"\nintent: "written by B"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
 printf 'S_A' > "$TMP/.reload/pending"
-OUT="$(run sessionstart-hook.sh '{"session_id":"S_B","source":"clear"}')"
-ck "foreign arm STILL rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
-ck "foreign arm warns" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
-ck "foreign arm still consumed" '[ ! -f "$TMP/.reload/pending" ]'
+OUT="$(run sessionstart-hook.sh '{"session_id":"S_C","source":"clear"}')"
+ck "incoherent arm STILL rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "incoherent arm warns" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "warning names the armer" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"S_A\")" >/dev/null'
+ck "warning names the digest writer" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"S_B\")" >/dev/null'
+ck "incoherent arm still consumed" '[ ! -f "$TMP/.reload/pending" ]'
 
-# Pre-0.3 empty arm: rehydrates, no warning, no migration noise.
-touch "$TMP/.reload/pending"
-OUT="$(run sessionstart-hook.sh '{"session_id":"S_B","source":"clear"}')"
+echo "-- empty arm (pre-0.3, no id ever recorded on the arm side): rehydrates, no warning, digest untouched --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S_ORIG"\nupdated_at: "x"\nintent: "untouched"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+touch "$TMP/.reload/pending"    # empty arm: no owner ever stamped
+OUT="$(run sessionstart-hook.sh '{"source":"clear"}')"   # no session_id in payload either
 ck "empty arm rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
 ck "empty arm warns nothing" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "empty arm + no incoming id -> digest stamp untouched" 'grep -q "^session_id: \"S_ORIG\"" "$TMP/.reload/session.md"'
+
+echo "-- no runtime id on input: arm IS set, but the payload carries no session_id -> stamp untouched --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S_X"\nupdated_at: "x"\nintent: "untouched too"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S_X' > "$TMP/.reload/pending"     # coherent arm (matches digest owner)
+OUT="$(run sessionstart-hook.sh '{"source":"clear"}')"    # no session_id field at all
+ck "no runtime id still rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step X\")" >/dev/null'
+ck "no runtime id warns nothing (coherent arm)" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "no runtime id -> claim skipped, stamp untouched" 'grep -q "^session_id: \"S_X\"" "$TMP/.reload/session.md"'
+
+echo "-- untrusted body: a body line starting session_id: must NOT be rewritten, only frontmatter --"
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nupdated_at: "x"\nintent: "own thread"\n---\n## Open questions & risks\nsession_id: NOT-THE-OWNER (model-written, untrusted)\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+printf 'S1' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "frontmatter session_id claimed" 'grep -q "^session_id: \"S2\"" "$TMP/.reload/session.md"'
+ck "body's session_id: line survives byte-identical" 'grep -qF "session_id: NOT-THE-OWNER (model-written, untrusted)" "$TMP/.reload/session.md"'
 
 echo "== Structural guard: no id-equality condition governs an exit (v0.1.5) =="
 # Spec criterion 3's second prong. The behavioral tests above prove rehydration
 # happens on the inputs we thought to try; this proves nobody re-introduced the
 # gate itself. An id comparison may set a warning flag — it must never reach exit.
-ck "no id comparison guards an exit" '! grep -nE "(ARM_OWNER|SESSION_ID).*(&&|\|\|).*exit|exit.*(ARM_OWNER|SESSION_ID)" "$H/sessionstart-hook.sh"'
+# The comparison basis changed from ARM_OWNER/SESSION_ID to
+# ARM_OWNER/DIGEST_OWNER_AT_REHYDRATE (fixing the defect); the structural
+# invariant it guards — no id comparison reaches an exit — did not.
+ck "no id comparison guards an exit" '! grep -nE "(ARM_OWNER|SESSION_ID|DIGEST_OWNER_AT_REHYDRATE).*(&&|\|\|).*exit|exit.*(ARM_OWNER|SESSION_ID|DIGEST_OWNER_AT_REHYDRATE)" "$H/sessionstart-hook.sh"'
 
 echo "== Stop pass 2 stamps the arm from its own payload =="
 rm -f "$TMP/.reload/pending"
