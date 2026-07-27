@@ -190,4 +190,9 @@ ck "missing session_id exits 0" 'have hooks/pretooluse-hook.sh && { pth "{\"tool
 ck "does not depend on CLAUDE_PLUGIN_ROOT" '! grep -q "CLAUDE_PLUGIN_ROOT" "$ROOT/hooks/pretooluse-hook.sh"'
 reset_reload
 
+echo "== command prose carries the runtime-id instructions =="
+ck "snapshot.md stamps session_id from the runtime" 'grep -q "CLAUDE_CODE_SESSION_ID" "$ROOT/commands/snapshot.md"'
+ck "snapshot.md arms with an owner, not bare touch" '! grep -qE "^[0-9]+\. Arm the reload: .touch" "$ROOT/commands/snapshot.md"'
+ck "snapshot.md calls the guard" 'grep -q "claim-digest.sh" "$ROOT/commands/snapshot.md"'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

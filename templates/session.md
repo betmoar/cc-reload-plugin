@@ -8,6 +8,10 @@
 
   Keep it fresh as you work (see the maintaining-session-continuity skill) so a surprise
   auto-compaction always has a recent snapshot to fall back on. Overwrite in place.
+
+  session_id is the RUNTIME session id — `echo "$CLAUDE_CODE_SESSION_ID"`, never recalled from
+  memory. It is what lets a second session in this directory detect that it is about to
+  overwrite someone else's digest.
 -->
 ---
 session_id: ""
