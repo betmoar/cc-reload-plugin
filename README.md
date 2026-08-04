@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.3.0.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.3.1.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -66,6 +66,13 @@ and **auto-detects each user's window** — nothing is hardcoded to one setup:
    occupancy, so it can't cause a premature reset.
 4. `context_window` in `.reload/config` overrides everything — the precise fix for a brand-new
    model id.
+
+Non-Claude models routed through the [cc-proxy plugin](https://github.com/betmoar) (GLM, DeepSeek,
+Qwen, etc.) are also recognized: `glm-4.5`/`glm-4.5-air` resolve to 128K, `glm-4.6`/`glm-4.7` and
+`glm-5`/`glm-5-turbo`/`glm-5.1` resolve to 200K. `glm-5.2`, the DeepSeek-v4 and Qwen3.x-max/plus
+tiers, and any OpenRouter-prefixed id (`deepseek/deepseek-v4-pro`, `qwen/qwen3.7-max`, etc.) are
+unrecognized by design and fall through to the optimistic 1M default — pin `context_window` if a
+proxy model's real window is smaller and it isn't in this curated set yet.
 
 Caveats: the usage field is **undocumented** (best-effort; if missing, the hook falls back to a
 byte estimate that errs early — safe when the goal is to stay low). Auto-compact's own threshold is

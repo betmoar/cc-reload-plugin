@@ -226,6 +226,52 @@ rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-50"}' >/dev/null
 ck "future sonnet-4-50 does NOT match sonnet-4-5 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
+echo "== model_window: cc-proxy (non-Claude) model ids =="
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.5"}' >/dev/null
+ck "glm-4.5 resolves to 128K window" 'grep -q "window: 128000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.5-air"}' >/dev/null
+ck "glm-4.5-air resolves to 128K window" 'grep -q "window: 128000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.6"}' >/dev/null
+ck "glm-4.6 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.7"}' >/dev/null
+ck "glm-4.7 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5"}' >/dev/null
+ck "glm-5 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5-turbo"}' >/dev/null
+ck "glm-5-turbo resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5.1"}' >/dev/null
+ck "glm-5.1 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5.2"}' >/dev/null
+ck "glm-5.2 resolves to 1M window (via default, not a special case)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"deepseek-v4-pro"}' >/dev/null
+ck "deepseek-v4-pro resolves to 1M window (via default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"deepseek-v4-flash"}' >/dev/null
+ck "deepseek-v4-flash resolves to 1M window (via default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"qwen3.7-max"}' >/dev/null
+ck "qwen3.7-max resolves to 1M window (via default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"deepseek/deepseek-v4-pro"}' >/dev/null
+ck "OpenRouter-prefixed deepseek/deepseek-v4-pro resolves to 1M window (no cc-proxy window published)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+# boundary anchoring: glm-5.3/glm-6 must NOT collide with glm-5/glm-4.5/etc -> fall through to
+# the optimistic 1M default (invariant 5). This is the load-bearing assertion for this block.
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5.3"}' >/dev/null
+ck "future glm-5.3 does NOT match glm-5/glm-5.1 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-6"}' >/dev/null
+ck "future glm-6 does NOT match glm-4.x/5.x -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
 echo "== Stop pass1: stop_hook_active with no marker -> stands down (no infinite block loop) =="
 # A blocked Stop re-fires the hook with stop_hook_active:true. Normally pass 2
 # catches that turn via the summarizing marker; if the marker is gone the hook

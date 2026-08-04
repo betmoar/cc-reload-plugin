@@ -4,6 +4,19 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-04
+
+### Fixed
+- **`model_window()` learns cc-proxy (non-Claude) model windows.** Every proxy model id (GLM,
+  DeepSeek, Qwen, routed through the cc-proxy plugin) previously fell through to the optimistic 1M
+  default, so e.g. a `glm-4.5` session (real window 128K) was budgeted 8x too generously and the
+  notify ladder never fired before auto-compaction. Added boundary-anchored cases for
+  `glm-4.5`/`glm-4.5-air` (128K) and `glm-4.6`/`glm-4.7`/`glm-5`/`glm-5-turbo`/`glm-5.1` (200K).
+  `glm-5.2`, DeepSeek-v4, Qwen3.x-max/plus/flash, and OpenRouter-prefixed ids
+  (`deepseek/deepseek-v4-pro`, `qwen/qwen3.7-max`, etc.) are deliberately left unrecognized —
+  they already resolve correctly via the existing 1M default (invariant 5), and cc-proxy publishes
+  no distinct window for the OpenRouter forms.
+
 ## [0.3.0] - 2026-07-27
 
 ### Added

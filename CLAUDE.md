@@ -162,6 +162,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 | Digest format / section names | `templates/session.md`, the pass-1 REINJECT heredoc in `stop-hook.sh`, `_first_bullet` calls in `sessionstart-hook.sh`, `commands/snapshot.md`, the skill |
 | Marker file names/locations (`lib.sh` constants) | both test files, README "Layout" + hook table |
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
+| cc-proxy model windows (GLM/DeepSeek/Qwen ids) | curated against `cc-proxy-plugin/scripts/list-models.js` (`CONTEXT_WINDOW` const) as of 2026-08-04 — re-check that source before adding/editing a proxy case; only add a case when the real window differs from the 1M default (invariant 5) |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
 | `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1, both test files' alias cases |

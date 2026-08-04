@@ -172,6 +172,15 @@ model_window() {
     *opus-4-0|*opus-4-0-*|*opus-4-1|*opus-4-1-*|*opus-4-5|*opus-4-5-*) printf '200000' ;;   # older non-[1m] Opus: genuine 200K
     *sonnet-4-0|*sonnet-4-0-*|*sonnet-4-5|*sonnet-4-5-*) printf '200000' ;;   # older non-[1m] Sonnet: genuine 200K
     *haiku*)                                         printf '200000'  ;;   # Haiku tiers: 200K (no minor split)
+    # cc-proxy (non-Claude) models below. Only windows that DIFFER from the optimistic
+    # 1M default get an explicit case; glm-5.2/deepseek-v4-*/qwen3.*-* are already 1M via
+    # the default and deliberately have no case here (adding one would just be a no-op that
+    # could bit-rot). Unlisted/OpenRouter-prefixed forms (e.g. "deepseek/deepseek-v4-pro",
+    # "qwen/qwen3.7-max") fall through to the default too — cc-proxy publishes no window for
+    # those. See CLAUDE.md invariant 5/6.
+    *glm-4.5|*glm-4.5-*)                             printf '128000'  ;;   # glm-4.5, glm-4.5-air: 128K
+    *glm-4.6|*glm-4.6-*|*glm-4.7|*glm-4.7-*)         printf '200000'  ;;   # glm-4.6, glm-4.7: 200K
+    *glm-5|*glm-5-*|*glm-5.1|*glm-5.1-*)             printf '200000'  ;;   # glm-5, glm-5-turbo, glm-5.1: 200K (glm-5.2 falls through to default 1M)
     *)                                               printf '1000000' ;;   # unrecognized id -> assume large (see stop-hook floor)
   esac
 }
