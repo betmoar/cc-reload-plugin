@@ -17,7 +17,14 @@ SOURCE="$(printf '%s' "$HOOK_INPUT" | jq -r '.source // ""')"
 MODEL="$(printf '%s' "$HOOK_INPUT" | jq -r '.model // ""')"
 if [ -n "$MODEL" ]; then
   ensure_reload_dir
-  printf 'model: %s\nwindow: %s\n' "$MODEL" "$(model_window "$MODEL")" > "$MODELFILE"
+  # Precedence: .reload/config's context_window override (checked later, in
+  # stop-hook.sh — it always wins, unchanged) > a live cc-proxy lookup > the
+  # curated table. proxy_window() only fires for a loopback ANTHROPIC_BASE_URL
+  # and fails silently (empty output) for every Claude id, so the F05 [1m]
+  # 1M-window guard is untouched: cc-proxy publishes no window for claude-*.
+  WIN="$(proxy_window "$MODEL")"
+  [ -n "$WIN" ] || WIN="$(model_window "$MODEL")"
+  printf 'model: %s\nwindow: %s\n' "$MODEL" "$WIN" > "$MODELFILE"
 fi
 
 # Marker hygiene on a genuine context reset (NOT resume — a resumed session keeps

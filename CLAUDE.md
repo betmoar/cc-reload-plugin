@@ -14,7 +14,9 @@ id when known), a two-pass handshake marker (`summarizing`), a notify ladder (`n
 model/window stamp (`model`), per-project config (`config`), and — since 0.3 — side-filed digests
 from a detected cross-session collision (`session.<id>.md`). The fourth hook, `PreToolUse`, is a
 same-session enforcement point for that collision guard, not a new continuity mechanism. There is
-no daemon, no network, no state anywhere else.
+no daemon, no state anywhere else, and no network on the per-turn hot path — SessionStart makes one
+optional loopback-only lookup against a local cc-proxy (see the `proxy_window()` decision below),
+fail-open, never repeated per-turn.
 
 ## Control flow (the whole system)
 
@@ -142,6 +144,21 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 - **Why `set -uo pipefail` but not `-e`?** Fail-open philosophy: a broken hook must degrade to
   "plugin does nothing", never to "session unusable". Guard specific failure points explicitly
   (e.g. `touch … || exit 0`) instead of letting `-e` kill the script at an arbitrary line.
+- **Why does `proxy_window()` (0.3.1) contact a network endpoint at all, softening "no network"?**
+  The single source of truth for a model's real context window is cc-proxy itself — it knows every
+  id it routes and, as of v0.5.1, publishes `context_window` on `GET /v1/models`. Hard-coding a
+  second copy of that table in `model_window()` means the two silently drift; the proxy is
+  authoritative, the table becomes the offline fallback for when it isn't running. The call is
+  scoped tightly enough that it doesn't reopen the daemon/network invariant in spirit: loopback-only
+  (never a remote host — checked against `ANTHROPIC_BASE_URL`'s host, never hard-coded), fired once
+  per session from `SessionStart` only (never the Stop hook's per-turn path), `--max-time 1`, and
+  fail-open-silent on literally anything going wrong (down, no `curl`, timeout, bad JSON, missing or
+  non-positive `context_window`) — the `[ -n "$WIN" ] || WIN="$(model_window "$MODEL")"` fallback
+  always has a value to use. **Rejected:** polling per-turn from the Stop hook (reintroduces network
+  I/O on the hot path CLAUDE.md explicitly protects); trusting the proxy for `claude-*` ids too
+  (cc-proxy only routes non-Claude traffic and never publishes a window for `claude-*`, so those ids
+  always fall through to the table — this is what keeps the F05 `[1m]` guard, invariant 5, intact
+  with the proxy reachable).
 - **Why is notify the default mode (v0.1.9)?** A forced snapshot turn costs ~1–3K model tokens
   and interrupts flow; users who found it invasive disabled the budget entirely (pct 0) and lost
   the safety net — the invasive default undermined the plugin's own purpose. A systemMessage nudge
@@ -162,7 +179,8 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 | Digest format / section names | `templates/session.md`, the pass-1 REINJECT heredoc in `stop-hook.sh`, `_first_bullet` calls in `sessionstart-hook.sh`, `commands/snapshot.md`, the skill |
 | Marker file names/locations (`lib.sh` constants) | both test files, README "Layout" + hook table |
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
-| cc-proxy model windows (GLM/DeepSeek/Qwen ids) | curated against `cc-proxy-plugin/scripts/list-models.js` (`CONTEXT_WINDOW` const) as of 2026-08-04 — re-check that source before adding/editing a proxy case; only add a case when the real window differs from the 1M default (invariant 5) |
+| cc-proxy model windows (GLM/DeepSeek/Qwen ids) | curated against `cc-proxy-plugin/scripts/list-models.js` (`CONTEXT_WINDOW` const) as of 2026-08-04 — re-check that source before adding/editing a proxy case; only add a case when the real window differs from the 1M default (invariant 5). Since 0.3.1 this table is the FALLBACK — cc-proxy v0.5.1+'s `GET /v1/models` `context_window` field (positive integer tokens; curated ids include it, uncurated ids OMIT it — never `null`) is consulted first by `proxy_window()`. If cc-proxy's response shape or the omit-not-null contract changes, `proxy_window()`'s jq extraction in `hooks/lib.sh` must change too |
+| `proxy_window()` (`hooks/lib.sh`) | `hooks/sessionstart-hook.sh` (sole caller), `tests/test-hooks.sh` (stub-`curl`-on-PATH seam), README "How occupancy is measured", SKILL.md windows note, CLAUDE.md decision note above |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
 | `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1, both test files' alias cases |

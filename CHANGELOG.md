@@ -6,6 +6,20 @@ All notable changes to cc-reload are documented here. The format follows
 
 ## [0.3.1] - 2026-08-04
 
+### Added
+- **`proxy_window()` learns a model's context window live from cc-proxy.** cc-proxy v0.5.1+
+  publishes `context_window` on `GET /v1/models` for every id it curates (entries it hasn't
+  curated OMIT the field, never `null`). `SessionStart` now tries this first — one loopback-only
+  HTTP call (`--max-time 1`), fired once per session, never on the Stop hook's per-turn path — and
+  falls back to the hard-coded `model_window()` table on ANY failure: no `ANTHROPIC_BASE_URL`, a
+  non-loopback host, no `curl`, timeout, non-200, malformed JSON, or a missing/non-positive
+  `context_window`. `model_window()` is now the offline/no-proxy fallback, not dead weight — kept
+  and still exercised directly by its own tests. Precedence unchanged and now three-tiered:
+  `.reload/config`'s `context_window` override (checked downstream in `stop-hook.sh`) > live
+  cc-proxy lookup > curated table. Verified the F05 guard still holds with the proxy reachable:
+  `claude-opus-5[1m]` still stamps `1000000`, since cc-proxy publishes no window for any `claude-*`
+  id, so the proxy leg returns empty and the table's `[1m]` case resolves it as before.
+
 ### Fixed
 - **`model_window()` learns cc-proxy (non-Claude) model windows.** Every proxy model id (GLM,
   DeepSeek, Qwen, routed through the cc-proxy plugin) previously fell through to the optimistic 1M

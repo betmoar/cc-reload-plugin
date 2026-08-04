@@ -35,10 +35,12 @@ auto-compact fire.
 current large-context models). Effective context — where reasoning stays sharp — degrades well
 before the raw window fills, so 45% of 1M is generous: prefer ~30 or lower for reasoning-heavy or
 context-sensitive work. Non-Claude models routed through the cc-proxy plugin (e.g. `glm-4.5` at
-128K, `glm-4.6`/`glm-5` at 200K) have real windows far smaller than 1M — `model_window()` knows the
-curated set; an unrecognized proxy id still falls back to the optimistic 1M assumption, so pin
-`context_window` explicitly if you're running a small-window proxy model this plugin doesn't know
-about yet.
+128K, `glm-4.6`/`glm-5` at 200K) have real windows far smaller than 1M. `SessionStart` learns this
+live from cc-proxy itself (one loopback-only call to its `/v1/models`, fired once per session) when
+the proxy is reachable; `model_window()`'s curated table is the offline fallback. An id neither the
+proxy nor the table knows still falls back to the optimistic 1M assumption, so pin `context_window`
+explicitly if you're running a small-window proxy model and the proxy might not be up at session
+start.
 
 **Keep the digest fresh continuously; don't babysit the boundary.** Auto-compaction fires without
 warning and a hook can't make you summarize after the fact, so the snapshot must already be good

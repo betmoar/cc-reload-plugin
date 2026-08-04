@@ -184,3 +184,56 @@ model_window() {
     *)                                               printf '1000000' ;;   # unrecognized id -> assume large (see stop-hook floor)
   esac
 }
+
+# Ask a locally-running cc-proxy for a model's real context window, so the
+# curated table above becomes a fallback rather than the only source of
+# truth. cc-proxy v0.5.1+ publishes `context_window` (positive integer
+# tokens) on `GET /v1/models`; ids it hasn't curated OMIT the field entirely
+# (never null — CLAUDE.md coupling table). Called ONCE per session, from
+# SessionStart only (hooks/sessionstart-hook.sh) — never from the Stop hook's
+# per-turn hot path, and never from the mid-session restamp path in
+# stop-hook.sh, which stays table-only on purpose.
+#
+# Prints the window on success; prints NOTHING (and returns non-zero) on ANY
+# failure — no ANTHROPIC_BASE_URL, non-loopback host, no curl, timeout,
+# non-200, malformed JSON, missing/invalid field. Callers must treat empty
+# output as "consult the table", never as an error to surface.
+#
+# Loopback-only by design: this must never phone out. The URL is derived
+# from ANTHROPIC_BASE_URL (whatever port the user's proxy actually bound —
+# never hard-coded), and only used if its host is 127.0.0.1, localhost, or
+# ::1.
+proxy_window() {
+  local model="$1"
+  [ -n "$model" ] || return 1
+  [ -n "${ANTHROPIC_BASE_URL:-}" ] || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+
+  # Extract the host from ANTHROPIC_BASE_URL (scheme://host[:port][/path]) and
+  # require it to be loopback. This is a privacy guard, not an optimization —
+  # a non-loopback base URL means a REAL remote endpoint, and this plugin must
+  # never contact one on its own initiative.
+  local host
+  host="$(printf '%s' "$ANTHROPIC_BASE_URL" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*##')"
+  case "$host" in
+    127.0.0.1|localhost|::1) ;;
+    *) return 1 ;;
+  esac
+
+  local base="${ANTHROPIC_BASE_URL%/}"
+  local body
+  body="$(curl -fsS --max-time 1 --connect-timeout 1 "$base/v1/models" 2>/dev/null)" || return 1
+  [ -n "$body" ] || return 1
+
+  local win
+  win="$(printf '%s' "$body" | jq -r --arg id "$model" '
+    ( .data // . // [] )
+    | ( if type == "array" then . else [] end )
+    | map(select(.id == $id))
+    | first
+    | (.context_window // empty)
+  ' 2>/dev/null)"
+
+  [[ "$win" =~ ^[0-9]+$ ]] && [ "$win" -gt 0 ] || return 1
+  printf '%s' "$win"
+}
