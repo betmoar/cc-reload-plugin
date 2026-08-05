@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.3.0.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.3.1.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -66,6 +66,18 @@ and **auto-detects each user's window** — nothing is hardcoded to one setup:
    occupancy, so it can't cause a premature reset.
 4. `context_window` in `.reload/config` overrides everything — the precise fix for a brand-new
    model id.
+
+Non-Claude models routed through the [cc-proxy plugin](https://github.com/betmoar/cc-proxy-plugin) (GLM, DeepSeek,
+Qwen, etc.) get their window from cc-proxy itself when it's reachable: `SessionStart` makes one
+loopback-only, 1-second-timeout call to `GET $ANTHROPIC_BASE_URL/v1/models` (only when
+`ANTHROPIC_BASE_URL` resolves to `127.0.0.1`/`localhost`/`::1` — never a remote host) and reads the
+`context_window` field cc-proxy v0.5.1+ publishes for each id it curates. Any failure — proxy down,
+no `curl`, timeout, missing/invalid field — falls back to a hard-coded table:
+`glm-4.5`/`glm-4.5-air` resolve to 128K, `glm-4.6`/`glm-4.7` and `glm-5`/`glm-5-turbo`/`glm-5.1`
+resolve to 200K. `glm-5.2`, the DeepSeek-v4 and Qwen3.x-max/plus tiers, and any OpenRouter-prefixed
+id (`deepseek/deepseek-v4-pro`, `qwen/qwen3.7-max`, etc.) are unrecognized by the table and fall
+through to the optimistic 1M default — pin `context_window` if a proxy model's real window is
+smaller, the proxy is unreachable at session start, and it isn't in this curated fallback set yet.
 
 Caveats: the usage field is **undocumented** (best-effort; if missing, the hook falls back to a
 byte estimate that errs early — safe when the goal is to stay low). Auto-compact's own threshold is

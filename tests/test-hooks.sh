@@ -226,6 +226,52 @@ rm -f "$TMP/.reload/model"
 run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"claude-sonnet-4-50"}' >/dev/null
 ck "future sonnet-4-50 does NOT match sonnet-4-5 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
+echo "== model_window: cc-proxy (non-Claude) model ids =="
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.5"}' >/dev/null
+ck "glm-4.5 resolves to 128K window" 'grep -q "window: 128000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.5-air"}' >/dev/null
+ck "glm-4.5-air resolves to 128K window" 'grep -q "window: 128000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.6"}' >/dev/null
+ck "glm-4.6 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-4.7"}' >/dev/null
+ck "glm-4.7 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5"}' >/dev/null
+ck "glm-5 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5-turbo"}' >/dev/null
+ck "glm-5-turbo resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5.1"}' >/dev/null
+ck "glm-5.1 resolves to 200K window" 'grep -q "window: 200000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5.2"}' >/dev/null
+ck "glm-5.2 resolves to 1M window (via default, not a special case)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"deepseek-v4-pro"}' >/dev/null
+ck "deepseek-v4-pro resolves to 1M window (via default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"deepseek-v4-flash"}' >/dev/null
+ck "deepseek-v4-flash resolves to 1M window (via default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"qwen3.7-max"}' >/dev/null
+ck "qwen3.7-max resolves to 1M window (via default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"deepseek/deepseek-v4-pro"}' >/dev/null
+ck "OpenRouter-prefixed deepseek/deepseek-v4-pro resolves to 1M window (no cc-proxy window published)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+# boundary anchoring: glm-5.3/glm-6 must NOT collide with glm-5/glm-4.5/etc -> fall through to
+# the optimistic 1M default (invariant 5). This is the load-bearing assertion for this block.
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-5.3"}' >/dev/null
+ck "future glm-5.3 does NOT match glm-5/glm-5.1 -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+run sessionstart-hook.sh '{"session_id":"S1","source":"startup","model":"glm-6"}' >/dev/null
+ck "future glm-6 does NOT match glm-4.x/5.x -> 1M (not 200K)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
 echo "== Stop pass1: stop_hook_active with no marker -> stands down (no infinite block loop) =="
 # A blocked Stop re-fires the hook with stop_hook_active:true. Normally pass 2
 # catches that turn via the summarizing marker; if the marker is gone the hook
@@ -502,5 +548,85 @@ touch -t 202001010000 "$TMP/.reload/summarizing"; touch "$TMP/.reload/session.md
 printf '{}\n' > "$TMP/S_FALLBACK.jsonl"
 OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/S_FALLBACK.jsonl\"}")"
 ck "stop falls back to transcript basename" '[ "$(cat "$TMP/.reload/pending")" = "S_FALLBACK" ]'
+
+echo "== proxy_window: learns a model's window from a local cc-proxy, table stays fallback =="
+# Test seam: a stub `curl` earlier on PATH than the real one. This is the most
+# robust seam in plain bash on macOS+Linux CI — no port binding, no background
+# server to reap, no flakiness from a slow listener. The stub inspects
+# STUB_CURL_MODE (set per-case) and never touches the network.
+STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
+cat > "$STUBBIN/curl" <<'STUBEOF'
+#!/usr/bin/env bash
+case "${STUB_CURL_MODE:-}" in
+  ok)
+    printf '%s' '{"data":[{"id":"stub-model","context_window":128000},{"id":"stub-null","context_window":null},{"id":"stub-zero","context_window":0},{"id":"stub-str","context_window":"abc"}]}'
+    ;;
+  down) exit 7 ;;   # curl's own "couldn't connect" exit code
+  *) exit 1 ;;
+esac
+STUBEOF
+chmod +x "$STUBBIN/curl"
+
+run_proxy(){ # model source-json-extra-env...
+  local model="$1"
+  printf '{"session_id":"S1","source":"startup","model":"%s"}' "$model" \
+    | PATH="$STUBBIN:$PATH" CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" \
+      ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}" STUB_CURL_MODE="${STUB_CURL_MODE:-}" \
+      bash "$H/sessionstart-hook.sh"
+}
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "proxy window wins over the table (table would not know stub-model)" 'grep -q "window: 128000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "stub-missing" >/dev/null
+ck "proxy reachable but id absent -> table fallback (1M default)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "stub-null" >/dev/null
+ck "proxy null context_window -> table fallback" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "stub-zero" >/dev/null
+ck "proxy zero context_window -> table fallback" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "stub-str" >/dev/null
+ck "proxy garbage context_window -> table fallback" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL='' STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "ANTHROPIC_BASE_URL unset -> no lookup, table used, no hang" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="https://example.com" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "non-loopback base URL -> no lookup attempted (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+# IPv6 loopback is BRACKETED in a URL — the only valid form. An earlier sed-based
+# host parse cut "[::1]" down to "[", so the ::1 allowlist entry never matched and
+# the lookup was silently skipped on an IPv6-configured proxy. These lock both
+# directions: bracketed loopback is allowed, bracketed non-loopback is not.
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://[::1]:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "bracketed IPv6 loopback [::1] -> proxy lookup fires" 'grep -q "window: 128000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://[2001:db8::1]:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "bracketed IPv6 non-loopback -> no lookup (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+# A host that merely STARTS with the loopback literal must not pass — the
+# allowlist is an exact match, not a prefix.
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1.evil.com:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "loopback-prefixed remote host -> no lookup (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+START=$(date +%s)
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=down run_proxy "stub-model" >/dev/null
+ELAPSED=$(( $(date +%s) - START ))
+ck "proxy down -> table fallback" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+ck "proxy-down case does not hang (<5s)" '[ "$ELAPSED" -lt 5 ]'
+
+echo "== proxy_window: F05 guard holds — [1m] Claude id still resolves 1M with proxy reachable =="
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "claude-opus-5[1m]" >/dev/null
+ck "claude-opus-5[1m] stamps 1000000 (cc-proxy omits window for claude-* ids)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
