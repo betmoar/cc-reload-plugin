@@ -50,6 +50,25 @@ OUT="$(seg "$(pj 50 1000000)")"
 ck "50% absolute is green (disabled)" 'printf "%s" "$OUT" | grep -q "\[32m"'
 rm -f "$TMP/.reload/config"
 
+echo "== segment: model-file stamp wins over harness 200k default (issue #9) =="
+# The harness reports context_window_size=200000 for an unrecognized model id,
+# but SessionStart stamped the proxy-resolved 1M window to .reload/model.
+mkdir -p "$TMP/.reload"; printf 'window: 1000000\n' > "$TMP/.reload/model"
+OUT="$(plain "$(seg "$(pj 7 200000)")")"
+ck "renders ctx[1M] from .reload/model stamp" '[ "$OUT" = "ctx[1M] 7%·45" ]'
+
+echo "== segment: context_window override in config beats model stamp =="
+printf 'context_window: 200000\n' > "$TMP/.reload/config"
+# model file still says 1M; override must win and pin the tag to 200k.
+OUT="$(plain "$(seg "$(pj 7 1000000)")")"
+ck "override pins ctx[200k] despite 1M stamp" '[ "$OUT" = "ctx[200k] 7%·45" ]'
+
+echo "== segment: invalid override (0) falls back to model stamp, not payload =="
+printf 'context_window: 0\n' > "$TMP/.reload/config"
+OUT="$(plain "$(seg "$(pj 7 200000)")")"
+ck "invalid override ignored, model stamp wins" '[ "$OUT" = "ctx[1M] 7%·45" ]'
+rm -f "$TMP/.reload/config" "$TMP/.reload/model"; rmdir "$TMP/.reload"
+
 echo "== segment: no context_window -> empty (early session / post-compact) =="
 ck "empty on missing context_window" '[ -z "$(seg "{\"workspace\":{\"project_dir\":\"/tmp\"}}")" ]'
 echo "== segment: null used_percentage -> empty =="
