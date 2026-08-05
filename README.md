@@ -67,7 +67,7 @@ and **auto-detects each user's window** — nothing is hardcoded to one setup:
 4. `context_window` in `.reload/config` overrides everything — the precise fix for a brand-new
    model id.
 
-Non-Claude models routed through the [cc-proxy plugin](https://github.com/betmoar) (GLM, DeepSeek,
+Non-Claude models routed through the [cc-proxy plugin](https://github.com/betmoar/cc-proxy-plugin) (GLM, DeepSeek,
 Qwen, etc.) get their window from cc-proxy itself when it's reachable: `SessionStart` makes one
 loopback-only, 1-second-timeout call to `GET $ANTHROPIC_BASE_URL/v1/models` (only when
 `ANTHROPIC_BASE_URL` resolves to `127.0.0.1`/`localhost`/`::1` — never a remote host) and reads the

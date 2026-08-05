@@ -213,8 +213,18 @@ proxy_window() {
   # require it to be loopback. This is a privacy guard, not an optimization —
   # a non-loopback base URL means a REAL remote endpoint, and this plugin must
   # never contact one on its own initiative.
-  local host
-  host="$(printf '%s' "$ANTHROPIC_BASE_URL" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*##')"
+  #
+  # An IPv6 literal is BRACKETED in a URL (http://[::1]:4000) — that is the only
+  # valid form, since a bare "::1:4000" cannot be split into host and port. So
+  # strip the scheme, then peel the brackets FIRST; splitting on ":" before that
+  # would cut "[::1]" down to "[" and silently fail the allowlist (the bug this
+  # replaces). Only after the bracketed form is handled is it safe to cut at the
+  # first ":" or "/", which delimits port/path for the unbracketed hosts.
+  local host="${ANTHROPIC_BASE_URL#*://}"
+  case "$host" in
+    \[*\]*) host="${host#\[}"; host="${host%%\]*}" ;;   # [::1]:4000 -> ::1
+    *)      host="${host%%/*}"; host="${host%%:*}" ;;   # 127.0.0.1:4000 -> 127.0.0.1
+  esac
   case "$host" in
     127.0.0.1|localhost|::1) ;;
     *) return 1 ;;

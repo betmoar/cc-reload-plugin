@@ -601,6 +601,22 @@ rm -f "$TMP/.reload/model"
 ANTHROPIC_BASE_URL="https://example.com" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
 ck "non-loopback base URL -> no lookup attempted (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
+# IPv6 loopback is BRACKETED in a URL — the only valid form. An earlier sed-based
+# host parse cut "[::1]" down to "[", so the ::1 allowlist entry never matched and
+# the lookup was silently skipped on an IPv6-configured proxy. These lock both
+# directions: bracketed loopback is allowed, bracketed non-loopback is not.
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://[::1]:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "bracketed IPv6 loopback [::1] -> proxy lookup fires" 'grep -q "window: 128000" "$TMP/.reload/model"'
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://[2001:db8::1]:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "bracketed IPv6 non-loopback -> no lookup (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+# A host that merely STARTS with the loopback literal must not pass — the
+# allowlist is an exact match, not a prefix.
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1.evil.com:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "loopback-prefixed remote host -> no lookup (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
 rm -f "$TMP/.reload/model"
 START=$(date +%s)
 ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=down run_proxy "stub-model" >/dev/null
