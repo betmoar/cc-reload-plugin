@@ -4,6 +4,20 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-08-05
+
+### Fixed
+- **Statusline shows the real context window for proxy-routed models.** Previously the statusline
+  tag trusted the live harness payload's `context_window.context_window_size` verbatim, which
+  reports a conservative `200k` default for any model id outside Claude Code's curated table — so a
+  model with a 1M window served through a loopback cc-proxy (e.g. `deepseek-v4-flash-0731`) rendered
+  as `200k`, disagreeing with both the proxy and the plugin's own `.reload/model` stamp, and
+  ignoring a `context_window` override the Stop hook already honors. The tag is now resolved with the
+  same precedence the Stop hook uses: a valid `context_window` override in `.reload/config` wins,
+  then the window stamped to `.reload/model` by SessionStart (which holds the proxy-resolved window
+  for non-Claude ids), and only then the live payload size. Occupancy (`used_percentage`) still comes
+  solely from the payload. Invalid overrides fall through, matching `stop-hook.sh`. (Issue #9)
+
 ## [0.3.1] - 2026-08-04
 
 ### Added
