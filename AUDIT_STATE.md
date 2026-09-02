@@ -66,8 +66,8 @@ Working tree: clean at aedcfd5
 - DECISION-02: commit/push to the designated branch + draft PR are pre-authorized by this session's standing instructions (the COMMIT gate for those three actions only); no other outward action will be taken.
 
 ## End state (after remediation)
-Tests: test-hooks 172/0 (+25) · test-config 45/0 (+14) · test-release 62/0 (new) · test-statusline 16/0 · test-e2e 62/0 · test-claim-digest 56/0; `bash tests/run-all.sh` ALL GATES GREEN with shellcheck 0.10.0; Stop hook on 57MB: 1.910s → 0.060s (0.983s worst-case fallback).
-Findings: 9 (F01–F09); 9 fixed (F01–F06, F08 in code with red-run tests; F07, F09 by tooling + docs); 0 deferred. Mutation pass: 9/10 pins red (M2 vacuous, documented). Version 0.3.3.
+Tests (after the maintainer's review commit 4e0b708): test-hooks 177/0 (+30) · test-config 46/0 (+15) · test-release 65/0 (new) · test-statusline 16/0 · test-e2e 62/0 · test-claim-digest 56/0; `bash tests/run-all.sh` ALL GATES GREEN with shellcheck 0.10.0; Stop hook on 57MB: 1.910s → 0.060s (0.983s worst-case fallback).
+Findings: 10 (F01–F10); 10 fixed (F01–F06, F08 in code with red-run tests; F07, F09 by tooling + docs; F10 — introduced by this audit's F03 rewrite, found by the maintainer's review, fixed in 4e0b708 and verified here); 0 deferred. Mutation pass: 9/10 original pins red (M2 vacuous, documented) + 3/3 review pins red. Version 0.3.3.
 Artifacts: tests/run-all.sh, tests/test-release.sh, .github/workflows/ci.yml (pinned), CLAUDE.md (invariants 14–16, playbooks, couplings, landmines, backlog 5–8), docs/audit-2026-09-02-principal.md (handoff + guardrail catalog + residual risks + backlog), CHANGELOG [0.3.3].
 
 ## What's left (for the successor — prioritized in docs/audit-2026-09-02-principal.md)
