@@ -47,9 +47,14 @@ repete_active() {
 # used to come back WITH the comment, fail its validation and silently fall
 # back to the default — the documented `context_window` pin was dropped. Values
 # here are numbers, enums and model ids; `#` is never legitimate content.
-# FOUR readers parse this file and must agree: this function,
-# scripts/reload-config.sh `get`, and scripts/statusline.sh (three inline
-# copies) — tests/test-config.sh "reader PARITY" pins them to each other.
+# THREE readers parse THIS file and must agree: this function,
+# scripts/reload-config.sh `get`, and scripts/statusline.sh (two inline copies,
+# `context_window:` and `context_budget_pct:`) — tests/test-config.sh "reader
+# PARITY" pins them to each other. A FIFTH copy of the same strip lives in
+# statusline.sh for `.reload/model`'s `window:` line: a different FILE, so the
+# parity loop cannot reach it and it has its own case ("the FIFTH strip").
+# Miscounting these is how the gap opens — the earlier "FOUR readers" wording
+# hid that the .reload/model copy was pinned by nothing at all.
 kv() {
   [ -f "$2" ] || return 0
   grep -E "^$1:" "$2" | head -1 \

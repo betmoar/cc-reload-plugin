@@ -123,19 +123,33 @@ TRANSCRIPT="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""')"
 #     parse on one such line and silently fell back to the byte/4 estimate
 #     (3MB of transcript read as "~75%" where usage was 10%).
 #   * `.isSidechain != true` — subagent rows are not the main thread. Older
-#     Claude Code versions append them to the main transcript (cc-repete measured
-#     "500 trailing sidechain lines"); current ones write subagents/*.jsonl. A
-#     subagent's small usage under-reported occupancy (no nudge while the main
-#     thread was over budget) AND its model restamped .reload/model — a haiku
-#     subagent stamped 200K, which on a [1m]-alias session permanently stripped
-#     the invariant-5 shield. `!= true` keeps rows where the field is absent/null.
+#     Claude Code versions append them to the main transcript (cc-repete cites
+#     "500 trailing sidechain lines" as a design margin); current ones write
+#     subagents/*.jsonl. A subagent's small usage under-reported occupancy (no
+#     nudge while the main thread was over budget) AND its model restamped
+#     .reload/model — a haiku subagent stamped 200K, which on a [1m]-alias
+#     session permanently stripped the invariant-5 shield. `!= true` keeps rows
+#     where the field is absent/null.
 #   * one "tokens model" line per matching row; the caller keeps the LAST.
+#   * the two halves fail INDEPENDENTLY (audit 2026-09-02 F10). They are
+#     concatenated, so combining them in one fallible expression means a wrong
+#     TYPE in either half throws for the whole row — `tail -n 1` then returns an
+#     EARLIER row and USED is a well-formed number that passes every check
+#     below, so the byte/4 fallback never fires and a 95% session measures as
+#     2%. That is silent-WRONG, and strictly worse than the slurp this replaced
+#     (which produced NO answer, i.e. the safe over-count). `| numbers` and
+#     `| strings` drop a mistyped value instead of raising, so a non-string
+#     model costs only the model id — the row's token count still reports. A
+#     row with NO numeric usage field at all is unmeasurable, so it is skipped
+#     (`select(length > 0)`) rather than reported as 0: emitting "0" would make
+#     it the LAST line, and USED=0 sends the caller to the byte/4 estimate for
+#     the whole transcript instead of the last row that could actually be read.
 TURN_SCAN_JQ='fromjson? | objects
   | select((.message|type)=="object" and .message.role=="assistant" and .isSidechain != true)
-  | ((((.message.usage // {})
-        | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))
-       | tostring)
-     + " " + (.message.model // ""))'
+  | [ .message.usage | objects
+      | (.input_tokens, .cache_read_input_tokens, .cache_creation_input_tokens) | numbers ] as $n
+  | select(($n | length) > 0)
+  | (($n | add) | tostring) + " " + (.message.model | strings // "")'
 
 # Read a tail WINDOW first, the whole file only if the window holds no
 # main-thread assistant row. The transcript is tens of MB near budget and this

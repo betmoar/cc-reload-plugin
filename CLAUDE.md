@@ -127,8 +127,9 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     comparison, state which side rotates across a reset. (Tests: "coherent arm warns nothing",
     "second clear also silent (false positive does not reappear)", "incoherent arm warns"
     (`tests/test-hooks.sh`); e2e single-session lifecycle cycle. Spec §4.2.3, corrected.)
-14. **The occupancy scan reads the last MAIN-THREAD assistant row, per line, from a tail window.**
-    (audit 2026-09-02 F01/F02/F03.) Three rules, one jq program (`TURN_SCAN_JQ` in `stop-hook.sh`):
+14. **The occupancy scan reads the last MAIN-THREAD assistant row, per line, from a tail window,
+    and its two halves fail independently.** (audit 2026-09-02 F01/F02/F03, F10.) Four rules, one
+    jq program (`TURN_SCAN_JQ` in `stop-hook.sh`):
     `.isSidechain != true` (subagent rows are not the main thread — older Claude Code appends them
     to the main transcript, current versions write `subagents/*.jsonl`; a subagent's tiny usage
     under-reported occupancy AND its model restamped `.reload/model`, which on a `[1m]` session
@@ -136,11 +137,21 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     non-object `message` skips that LINE — the old `-s` slurp aborted the whole parse and fell to the
     byte/4 estimate: 3MB read as "~75%" at 10% real); and `tail -n 2000` first, full-file stream
     only when the window holds no main-thread row (a tail window is a suffix, so its last main-thread
-    row IS the file's; measured 1.91s → 0.06s on 57MB, 0.98s worst-case fallback). The window
-    mechanism is pinned by INVOCATION (a `jq` shim on PATH: never handed the transcript path on the
-    window path, exactly once on the fallback, never a slurp flag) — a wall-clock assertion in CI is
-    a flake generator. (Tests: "sidechain row last: main thread's 50% still nudges", "[1m] stamp
-    survives a sidechain row", "truncated trailing line: the valid 10% row is measured",
+    row IS the file's; measured 1.91s → 0.06s on 57MB, 0.98s worst-case fallback); and `| numbers`
+    / `| strings` around the two halves, so a mistyped field costs only that field. The last rule
+    is the subtle one: the program CONCATENATES tokens and model, so combining them in one fallible
+    expression made a wrong type in *either* half throw for the whole row — `tail -n 1` then
+    returned an EARLIER row, and `USED` was a well-formed number that passed every validity check,
+    so the byte/4 fallback never fired and a 95% session measured as 2%. That is silent-WRONG, and
+    strictly worse than the slurp it replaced (which produced NO answer — the safe over-count). A
+    row with no numeric usage field at all is SKIPPED rather than emitted as `0`, because a
+    trailing `0` becomes the last line and sends the caller to byte/4 for the whole transcript.
+    The window mechanism is pinned by INVOCATION (a `jq` shim on PATH: never handed the transcript
+    path on the window path, exactly once on the fallback, never a slurp flag) — a wall-clock
+    assertion in CI is a flake generator. (Tests: "sidechain row last: main thread's 50% still
+    nudges", "[1m] stamp survives a sidechain row", "truncated trailing line: the valid 10% row is
+    measured", "non-string model on the last row: its 95% is still measured (not the earlier 2%)",
+    "string input_tokens: row skipped, the last MEASURABLE row (50%) is used",
     "window path: jq never received the transcript path", "fallback path: jq received the
     transcript path exactly once")
 15. **Every marker WRITER verifies with `-f`, because every marker READER tests `-f`.** (audit
@@ -154,16 +165,21 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     fail-closed door. (Tests: "directory at summarizing: first Stop does not block", "pass 2 with an
     unwritable arm warns instead of claiming success", "over budget with a directory at pending: no
     re-block (fail-open)", "PreCompact with an unwritable arm warns")
-16. **The four config readers strip trailing `# comments` and agree with each other.** (audit
-    2026-09-02 F04.) The README's own `.reload/config` example is written `key: value   # comment`;
-    `hooks/lib.sh` `kv()`, `scripts/reload-config.sh get` and the three inline copies in
-    `scripts/statusline.sh` all returned the comment as part of the value, failed validation and
-    silently fell back to the default — the documented `context_window` pin was dropped. Values are
-    numbers, enums and model ids; `#` is never content. The copies are deliberate (statusline must
-    not source lib.sh's jq-exit; reload-config must not either) and are pinned to each other by a
-    fixture-driven parity test, and the README block itself is fed to the Stop hook. (Tests:
-    "reader PARITY", "commented context_window pin is honoured -> 75% nudges", "README still
-    carries the three-line example")
+16. **Every config reader strips trailing `# comments`, and the ones reading the same file agree.**
+    (audit 2026-09-02 F04.) The README's own `.reload/config` example is written
+    `key: value   # comment`; `hooks/lib.sh` `kv()`, `scripts/reload-config.sh get` and the inline
+    copies in `scripts/statusline.sh` all returned the comment as part of the value, failed
+    validation and silently fell back to the default — the documented `context_window` pin was
+    dropped. Values are numbers, enums and model ids; `#` is never content. Count them precisely,
+    because the count is what decides what the parity test can reach: **three** readers parse
+    `.reload/config` (`kv()`, `reload-config.sh get`, and statusline's `context_window:` +
+    `context_budget_pct:` greps) and are pinned to each other by the fixture-driven parity loop; a
+    **fifth** copy of the same strip reads `.reload/model`'s `window:` line — a different FILE, so
+    the loop cannot reach it and it needs its own case. Deleting that one failed no test until
+    2026-09-02 F10; the "four readers" wording is what hid it. The copies are deliberate
+    (statusline must not source lib.sh's jq-exit; reload-config must not either), and the README
+    block itself is fed to the Stop hook. (Tests: "reader PARITY", "the FIFTH strip", "commented
+    context_window pin is honoured -> 75% nudges", "README still carries the three-line example")
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -243,7 +259,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 | `PENDING` being a stamped file rather than a `touch` | `stop-hook.sh:69`, `precompact-hook.sh:24`, `sessionstart-hook.sh` arm-owner block, both test files (these two citations are checked by `tests/test-release.sh`: the cited line must contain `PENDING`) |
 | `context_owner_window` semantics (default 14400, 0=off) | `lib.sh` `owner_window()`, `scripts/reload-config.sh`, `commands/reload-budget.md`, README, `tests/test-config.sh` |
 | The transcript scan (`TURN_SCAN_JQ`, `WINDOW_LINES` in `stop-hook.sh`) | ONE program, TWO reads (window, then full-file fallback) — keep it one definition. The main-thread filter, the per-line mode and the window are each pinned separately (invariant 14's tests); the `jq` shim test breaks if jq is ever handed the transcript PATH on the window path or a slurp flag anywhere. Re-measure by hand on a ≥50MB transcript after touching it (numbers in invariant 14) — never add a wall-clock assertion |
-| Any `.reload/config` reader (`lib.sh` `kv()`, `reload-config.sh get`, the three inline greps in `statusline.sh`) | the other three copies — same strip order: comment, trailing whitespace, one layer of quotes. `tests/test-config.sh` "reader PARITY" runs one fixture set through all of them; README "Configuration" states comments are allowed (the example block is a test fixture: `tests/test-hooks.sh` reads README.md:178-180 literally, so reformatting those three lines breaks the "README still carries the three-line example" case on purpose) |
+| Any config-file reader (`lib.sh` `kv()`, `reload-config.sh get`, the three inline greps in `statusline.sh`) | the other FOUR copies — same strip order: comment, trailing whitespace, one layer of quotes. `tests/test-config.sh` "reader PARITY" runs one fixture set through the three that read `.reload/config`; the `.reload/model` grep reads a different file and is pinned by "the FIFTH strip" instead. README "Configuration" states comments are allowed (the example block is a test fixture: `tests/test-hooks.sh` reads the three `context_*` lines under README "Configuration" literally — matched by CONTENT, not line number — so reformatting them breaks the "README still carries the three-line example" case on purpose) |
 | A marker write (`touch`/`printf >` to `summarizing`, `pending`) | verify `-f` right after (invariant 15); if you add a marker, its reader tests `-f` and its writer must too, or you have added a fail-closed door. Pass 1's arm gate is `-e` on purpose — do not "tidy" it back to `-f` |
 | `plugin.json` `version` | the newest `## [x.y.z]` heading in `CHANGELOG.md` (with a body) AND the README `Status: **vx.y.z.**` line, same commit — `tests/test-release.sh` fails otherwise. `plugin.json` is the plugin CACHE KEY: a bump that misses it ships an update nobody receives |
 | A new `tests/test-*.sh` | nothing — `tests/run-all.sh` globs it and CI calls run-all. `tests/test-release.sh` fails if `ci.yml` ever goes back to a hand-kept list, or drops the shellcheck pin |
@@ -288,12 +304,15 @@ The trap: `select(.message.role==…)` on a row whose `message` is a string is a
 re-measure on a ≥50MB transcript and update invariant 14's numbers.
 
 **Changing a `.reload/config` reader (or adding a key).**
-Guarantees: the four copies return the same value for the same line (parity test).
+Guarantees: the three `.reload/config` copies return the same value for the same line (parity
+test); the `.reload/model` copy is pinned separately ("the FIFTH strip").
 To add a key: add it to `reload-config.sh`'s known-key list + validation, read it through `cfg`
 (`lib.sh`) — never a fresh grep — document it in README "Configuration" and
-`commands/reload-budget.md`, and add a `test-config.sh` case. To change the strip: change all four
+`commands/reload-budget.md`, and add a `test-config.sh` case. To change the strip: change all FIVE
 sites in the same commit and extend the parity fixture list. Never: read the file with a bare
-`grep | cut` somewhere new. Verify: `bash tests/test-config.sh` — every "parity on […]" case green.
+`grep | cut` somewhere new; never assume the parity loop covers a reader of a different file — it
+writes `.reload/config` only. Verify: `bash tests/test-config.sh` — every "parity on […]" case
+green, plus "the FIFTH strip".
 
 **Adding or renaming a marker under `.reload/`.**
 Guarantees: readers test `-f`; writers verify `-f`; `startup|clear|compact` purges transient ones;
@@ -330,16 +349,20 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
   this first.
 - **Where subagent rows live depends on the Claude Code version.** Measured 2026-09-02: a current
   remote session wrote its Agent-tool subagent to `<sid>/subagents/agent-<id>.jsonl`, not the main
-  transcript; cc-repete's corpus of 75 real transcripts shows in-file `isSidechain:true` rows on
+  transcript; cc-repete carries the same in-file `isSidechain` filter, for the same hazard, on
   the maintainer's versions. The filter is correct on both — do not remove it because one version
   "doesn't need it".
 - **`tail -n` is a SUFFIX, and that is what makes the window correct.** Any main-thread row the
   window contains is necessarily the file's last one, so the window answer equals a full read. A
   `head`, a byte range, or a "middle" sample would not have that property.
-- **The `.reload/config` comment strip is in FOUR places** (`kv()`, `reload-config.sh get`, three
-  greps in `statusline.sh`). They are copies on purpose — the statusline and the config tool must
-  not source `lib.sh` (its jq-exit and project-dir resolution) — and the parity test is what keeps
-  copies honest. Adding a fifth reader without adding it to the parity fixture is how F04 comes back.
+- **The comment strip is in FIVE places, and only THREE of them read `.reload/config`** (`kv()`,
+  `reload-config.sh get`, statusline's `context_window:` and `context_budget_pct:` greps — plus
+  statusline's `.reload/model` `window:` grep, a different file). They are copies on purpose — the
+  statusline and the config tool must not source `lib.sh` (its jq-exit and project-dir resolution)
+  — and the parity test is what keeps the three honest. The `.reload/model` one is invisible to
+  that loop (it only writes `.reload/config`), so it carries its own case; deleting its strip
+  failed no test at all until 2026-09-02 F10. Adding a reader without adding it to the parity
+  fixture — or assuming the loop covers a reader of another file — is how F04 comes back.
 
 ## Backlog (prioritized, with context)
 
@@ -360,7 +383,8 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
 5. **Measure how often subagent rows share the main transcript on the Claude Code versions users
    run.** The main-thread filter (invariant 14) is correct either way; this decides whether the
    0.3.2 behaviour ever fired in the field and whether `WINDOW_LINES=2000` is generous enough
-   (cc-repete saw 500 trailing sidechain lines). Done-when: a note here with a version → layout
+   (cc-repete cites 500 trailing sidechain lines as its design margin — an unverified
+   bound, not a measured maximum). Done-when: a note here with a version → layout
    table from ≥3 real transcripts.
 6. **The rehydrate injects the WHOLE digest with no size cap** (`sessionstart-hook.sh` `BODY`). The
    template says ~30 lines and the model usually obeys; a runaway digest would blow the context it

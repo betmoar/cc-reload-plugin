@@ -7,7 +7,8 @@ All notable changes to cc-reload are documented here. The format follows
 ## [0.3.3] - 2026-09-02
 
 Principal-architect audit (`docs/audit-2026-09-02-principal.md`): nine findings, seven fixed here
-with a red-run test each, two closed by new tooling. No behaviour change on the ordinary path.
+with a red-run test each, two closed by new tooling. A tenth (F10) was found by the review of that
+audit and is fixed here too. No behaviour change on the ordinary path.
 
 ### Fixed
 - **The Stop hook measured whichever agent spoke last, not the main thread** (audit F01). The
@@ -33,8 +34,18 @@ with a red-run test each, two closed by new tooling. No behaviour change on the 
   README's own example** (audit F04). Every reader (`hooks/lib.sh` `kv()`, `reload-config.sh get`,
   three inline copies in `statusline.sh`) returned `45   # act at this %…`, failed validation and
   fell back to the default — a hand-written `context_window` pin was dropped, `snapshot` mode
-  reverted to notify. All four readers now strip a trailing comment; a reader-parity test pins the
-  copies to each other, and the README block itself is fed to the Stop hook in the suite.
+  reverted to notify. All five readers now strip a trailing comment; a reader-parity test pins the
+  three that read `.reload/config` to each other, and the README block itself is fed to the Stop
+  hook in the suite. The fifth copy reads `.reload/model` — a different file the parity loop cannot
+  reach, so it has its own case; deleting its strip failed no test until this release.
+- **One mistyped field on the last transcript row reported an EARLIER row's occupancy** (audit
+  F10, found reviewing this release). The scan concatenates `tokens<space>model`, so combining
+  them in one fallible expression let a wrong TYPE in either half throw for the whole row;
+  `tail -n 1` then returned an earlier row and `USED` was a well-formed number that passed every
+  validity check, so the byte/4 fallback never fired — a 95% session measured as 2% and nothing
+  nudged. Silent-wrong, and strictly worse than the 0.3.2 slurp it replaced (which produced NO
+  answer, i.e. the safe over-count). The halves now fail independently (`| numbers`, `| strings`);
+  a row with no numeric usage field at all is skipped rather than emitted as `0`.
 - **A directory where `.reload/summarizing` should be made pass 1 block on EVERY ordinary Stop**
   (audit F05, fail-closed — invariant 2). `touch` succeeds on a directory, `-f` never matches it,
   `rm -f` never removes it (measured 3/3 blocks). Pass 1 now verifies the marker with `-f` after
@@ -67,8 +78,18 @@ with a red-run test each, two closed by new tooling. No behaviour change on the 
 - CI pins shellcheck 0.10.0 (container) instead of whatever `ubuntu-latest` ships, and runs
   `tests/run-all.sh` instead of a hand-kept suite list.
 - CLAUDE.md: the transcript-scan decision rewritten (windowed stream, not a slurp), three new
-  invariants (14–16), couplings rows for the scan program / the four config readers / marker
+  invariants (14–16), couplings rows for the scan program / the config readers / marker
   writers / the version trio, per-component playbooks, and a refreshed backlog.
+- `tests/test-hooks.sh` scrubs `ANTHROPIC_BASE_URL` before invoking a hook. It was inherited, so on
+  a machine running cc-proxy (the maintainer's) `proxy_window()` answered the `model_window()` table
+  cases for real and the suite went red on an untouched tree — while CI, with no proxy on the
+  runner, stayed green. The one documented gate lied exactly where the code is written.
+- CLAUDE.md and `hooks/lib.sh` count the config readers correctly: THREE read `.reload/config` (the
+  parity loop's reach), a fifth strip reads `.reload/model`. The old "four readers" wording hid that
+  the `.reload/model` copy was pinned by nothing.
+- The "500 trailing sidechain lines" figure is attributed as cc-repete's stated design margin, not
+  a corpus measurement; its "75 real transcripts" figure counts user-row shapes for turn-boundary
+  detection and is no longer welded to it.
 
 ## [0.3.2] - 2026-08-05
 

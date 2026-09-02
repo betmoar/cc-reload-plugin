@@ -7,8 +7,17 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/.reload"
 pass=0; fail=0
 ck(){ if eval "$2"; then echo "  PASS: $1"; pass=$((pass+1)); else echo "  FAIL: $1"; fail=$((fail+1)); fi; }
+# ANTHROPIC_BASE_URL is SCRUBBED, not inherited: proxy_window() contacts a
+# loopback cc-proxy when it is set, so on a maintainer's own machine (where the
+# proxy is running and routes these ids for real) the model_window() table cases
+# below got the proxy's answer instead of the table's — `glm-5.3` and
+# `deepseek/deepseek-v4-pro` came back 1048576 where the table says 1000000, and
+# the suite went red on an untouched tree. CI never saw it (no proxy on the
+# runner), so the one documented gate lied exactly where it is developed. The
+# proxy path has its own coverage below, via a stub `curl` on PATH that sets
+# this variable deliberately.
 run(){ # script source-json
-  printf '%s' "$2" | CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/$1"
+  printf '%s' "$2" | ANTHROPIC_BASE_URL="" CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/$1"
 }
 
 echo "== SessionStart: armed -> injects digest, clears marker =="
@@ -639,7 +648,8 @@ ck "claude-opus-5[1m] stamps 1000000 (cc-proxy omits window for claude-* ids)" '
 # ── 2026-09-02 principal audit: F01/F02/F03 — the transcript scan ─────────────
 # Row builders. `main` is a main-thread assistant row; `side` is a SUBAGENT row
 # (isSidechain:true) as older Claude Code versions append them to the main
-# transcript (cc-repete measured "500 trailing sidechain lines"; current
+# transcript (cc-repete cites "500 trailing sidechain lines" as a design
+# margin, not a measurement; current
 # versions write subagents/*.jsonl instead — the filter must be correct on both).
 main_row(){ printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"%s","usage":{"input_tokens":%d,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$1" "$2"; }
 side_row(){ printf '{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":%d,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$1"; }
@@ -674,6 +684,35 @@ OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt
 ck "a row whose message is a string (and a bare number row) are skipped -> silent" '[ -z "$OUT" ]'
 ck "...and produce no stderr" '[ ! -s "$TMP/err.txt" ]'
 
+echo "-- a type-mismatched field on the LAST row must not resurrect an EARLIER row's number --"
+# The scan emits "tokens model" per row and the caller keeps the LAST line. If
+# tokens and model are combined in ONE fallible expression, a wrong TYPE in
+# either half kills the whole row under -R, `tail -n 1` then returns an EARLIER
+# row, and USED is a well-formed number that passes every validity check — so
+# the byte/4 fallback never fires and a 95% session measures as 2%. That is
+# silent-WRONG, strictly worse than the slurp this replaced (which produced no
+# answer at all, i.e. the safe over-count). Each half must fail independently.
+printf 'model: claude-opus-4-8\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 20000
+  printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":true,"usage":{"input_tokens":950000}}}\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "non-string model on the last row: its 95% is still measured (not the earlier 2%)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"95%\")" >/dev/null'
+# The other two shapes are unrecoverable (the token count itself is not a
+# number), so SKIPPING the row is the right answer — what must not happen is a
+# jq error on stderr, which is the signature of the whole-row abort above.
+rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 500000
+  printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":"950000"}}}\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "string input_tokens: row skipped, the last MEASURABLE row (50%) is used" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "...with no jq error on stderr" '[ ! -s "$TMP/err.txt" ]'
+rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 500000
+  printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-8","usage":"n/a"}}\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "non-object usage: row skipped, the last measurable row (50%) is used" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "...with no jq error on stderr either" '[ ! -s "$TMP/err.txt" ]'
+
 echo "== Stop hook: the scan is a tail WINDOW, with a full-file fallback (audit F03) =="
 # Mechanism pin by INVOCATION, not wall-clock: a jq shim logs every argv. On the
 # window path jq must never be handed the transcript PATH (it reads tail's
@@ -681,7 +720,7 @@ echo "== Stop hook: the scan is a tail WINDOW, with a full-file fallback (audit 
 # be handed the path exactly once. A shim is immune to machine speed.
 JQSHIM="$TMP/jqshim"; mkdir -p "$JQSHIM"; REALJQ="$(command -v jq)"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$JQ_LOG"\nexec %s "$@"\n' "$REALJQ" > "$JQSHIM/jq"; chmod +x "$JQSHIM/jq"
-run_shim(){ printf '%s' "$1" | JQ_LOG="$TMP/jq.log" PATH="$JQSHIM:$PATH" CLAUDE_PROJECT_DIR="$TMP" bash "$H/stop-hook.sh"; }
+run_shim(){ printf '%s' "$1" | JQ_LOG="$TMP/jq.log" PATH="$JQSHIM:$PATH" ANTHROPIC_BASE_URL="" CLAUDE_PROJECT_DIR="$TMP" bash "$H/stop-hook.sh"; }
 rm -f "$TMP/.reload/notified"; : > "$TMP/jq.log"
 { for i in $(seq 3000); do main_row claude-opus-4-8 1000; done; main_row claude-opus-4-8 500000; } > "$TMP/t.jsonl"
 OUT="$(run_shim "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
