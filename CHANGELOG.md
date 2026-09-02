@@ -90,6 +90,15 @@ audit and is fixed here too. No behaviour change on the ordinary path.
 - The "500 trailing sidechain lines" figure is attributed as cc-repete's stated design margin, not
   a corpus measurement; its "75 real transcripts" figure counts user-row shapes for turn-boundary
   detection and is no longer welded to it.
+- The `tokens<space>model` output contract is pinned at the seam. The consumer's "no space at all"
+  branch reads as dead code — `TURN_SCAN_JQ` always emits the trailing space — but `${LAST_TURN#* }`
+  returns the string UNCHANGED without one, so a tokens-only line would flow on as a model id and
+  stamp `.reload/model` with `model: 500000` (measured), destroying window resolution and the `[1m]`
+  shield for the session. It is a contract guard, not dead code, and is now labelled and tested as
+  one.
+- The scan's performance numbers are labelled: `stop-hook.sh` quotes SCAN-ONLY timings (slurp 2.25s,
+  full-file stream 0.85s, window 0.03s) while CLAUDE.md invariant 14 quotes WHOLE-HOOK timings for
+  the same run (1.91s → 0.06s, 0.98s fallback). Both were correct and neither said which it was.
 
 ## [0.3.2] - 2026-08-05
 

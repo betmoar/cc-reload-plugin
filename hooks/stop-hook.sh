@@ -153,8 +153,12 @@ TURN_SCAN_JQ='fromjson? | objects
 
 # Read a tail WINDOW first, the whole file only if the window holds no
 # main-thread assistant row. The transcript is tens of MB near budget and this
-# runs on every Stop: the slurp measured 2.2s / 275MB RSS on 57MB (over the ~1s
-# budget), a full-file stream 0.85s, the window 0.03s. A tail window is a
+# runs on every Stop. Measured on 57MB/100k lines, SCAN-ONLY (the numbers in
+# CLAUDE.md invariant 14 are the WHOLE HOOK on the same transcript — 1.91s ->
+# 0.06s, 0.98s fallback — so the two sets differ by the hook's fixed ~30ms plus
+# process startup; neither is wrong, they measure different things): the slurp
+# 2.25s / 275MB RSS (whole hook 1.91s, over the ~1s budget), a full-file stream
+# 0.85s, the window 0.03s. A tail window is a
 # SUFFIX, so any main-thread row it contains is necessarily the file's last one
 # — the answer is identical to a full read. 2000 lines covers the documented
 # 500-sidechain-line hazard 4x; when even that is exceeded the fallback keeps
@@ -167,6 +171,13 @@ if [ -z "$LAST_TURN" ]; then
 fi
 USED="${LAST_TURN%% *}"
 LIVE_MODEL="${LAST_TURN#* }"
+# Unreachable while TURN_SCAN_JQ emits the trailing space (it always does, even
+# with no `model` field) — but this is the CONTRACT between the scan program and
+# this consumer, not dead code. `${LAST_TURN#* }` returns the string UNCHANGED
+# when there is no space, so a tokens-only line would flow on as a model id and
+# stamp `.reload/model` with `model: 500000` (measured), destroying window
+# resolution and the [1m] shield for the rest of the session. Keep it; the shape
+# it depends on is pinned by "scan program still emits a space-joined pair".
 [ "$LIVE_MODEL" = "$LAST_TURN" ] && LIVE_MODEL=""   # no space at all -> no model field
 if ! [[ "$USED" =~ ^[0-9]+$ ]] || [ "$USED" -le 0 ]; then
   USED=$(( $(wc -c < "$TRANSCRIPT" 2>/dev/null || echo 0) / 4 ))   # fallback estimate

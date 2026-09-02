@@ -733,6 +733,24 @@ OUT="$(run_shim "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
 ck "fallback path: still the correct answer (50% nudges)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
 ck "fallback path: jq received the transcript path exactly once" '[ "$(grep -cF "$TMP/t.jsonl" "$TMP/jq.log")" -eq 1 ]'
 
+echo "-- the \"tokens<space>model\" output CONTRACT, pinned at the seam --"
+# The caller splits LAST_TURN on the first space and treats "no space at all" as
+# "no model field". That guard looks dead — jq emits a trailing space even when
+# .message.model is absent, so the no-space branch is unreachable TODAY — but it
+# is the contract between the scan program and its consumer, and it is what
+# stops a tokens-only line from being read as a MODEL ID. Measured with the
+# guard removed and the program emitting tokens only: .reload/model is stamped
+# `model: 500000`, which destroys window resolution and the [1m] shield for the
+# rest of the session. Pin the contract at the seam so a future change to
+# TURN_SCAN_JQ's shape cannot silently take that branch.
+ck "scan program still emits a space-joined 'tokens model' pair" \
+  'printf "%s\n" "{\"type\":\"assistant\",\"isSidechain\":false,\"message\":{\"role\":\"assistant\",\"model\":\"m1\",\"usage\":{\"input_tokens\":7}}}" | jq -rR "$(sed -n "/^TURN_SCAN_JQ=/,/^$/p" "$H/stop-hook.sh" | sed "1s/^TURN_SCAN_JQ=.//; \$d" | sed "\$s/.\$//")" 2>/dev/null | grep -qx "7 m1"'
+# ...and that a tokens-ONLY line never reaches the stamp as a model id.
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+main_row claude-opus-4-8 500000 > "$TMP/t.jsonl"
+run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" >/dev/null
+ck "a bare token count is never stamped as the model id" '! grep -qE "^model: [0-9]+$" "$TMP/.reload/model"'
+
 echo "== Stop hook: the README's own .reload/config example is honoured (audit F04) =="
 # The README block carries inline `# comments`; every reader must strip them,
 # or the pin it teaches is silently dropped. Feed the REAL README lines.

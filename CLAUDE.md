@@ -137,9 +137,10 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     non-object `message` skips that LINE — the old `-s` slurp aborted the whole parse and fell to the
     byte/4 estimate: 3MB read as "~75%" at 10% real); and `tail -n 2000` first, full-file stream
     only when the window holds no main-thread row (a tail window is a suffix, so its last main-thread
-    row IS the file's; measured 1.91s → 0.06s on 57MB, 0.98s worst-case fallback); and `| numbers`
-    / `| strings` around the two halves, so a mistyped field costs only that field. The last rule
-    is the subtle one: the program CONCATENATES tokens and model, so combining them in one fallible
+    row IS the file's; WHOLE-HOOK 1.91s → 0.06s on 57MB, 0.98s worst-case fallback — the
+    stop-hook.sh comment quotes the SCAN-ONLY numbers for the same run, which is why 2.25s appears
+    there and 1.91s here); and `| numbers` / `| strings` around the two halves, so a mistyped
+    field costs only that field. The last rule is the subtle one: the program CONCATENATES tokens and model, so combining them in one fallible
     expression made a wrong type in *either* half throw for the whole row — `tail -n 1` then
     returned an EARLIER row, and `USED` was a well-formed number that passed every validity check,
     so the byte/4 fallback never fired and a 95% session measured as 2%. That is silent-WRONG, and
@@ -153,7 +154,8 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     measured", "non-string model on the last row: its 95% is still measured (not the earlier 2%)",
     "string input_tokens: row skipped, the last MEASURABLE row (50%) is used",
     "window path: jq never received the transcript path", "fallback path: jq received the
-    transcript path exactly once")
+    transcript path exactly once", "scan program still emits a space-joined 'tokens model' pair",
+    "a bare token count is never stamped as the model id")
 15. **Every marker WRITER verifies with `-f`, because every marker READER tests `-f`.** (audit
     2026-09-02 F05.) `touch` and `printf >` "succeed" on a directory that `-f` never matches and
     `rm -f` never removes: a stray `mkdir .reload/summarizing` blocked EVERY ordinary Stop
