@@ -7,8 +7,17 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/.reload"
 pass=0; fail=0
 ck(){ if eval "$2"; then echo "  PASS: $1"; pass=$((pass+1)); else echo "  FAIL: $1"; fail=$((fail+1)); fi; }
+# ANTHROPIC_BASE_URL is SCRUBBED, not inherited: proxy_window() contacts a
+# loopback cc-proxy when it is set, so on a maintainer's own machine (where the
+# proxy is running and routes these ids for real) the model_window() table cases
+# below got the proxy's answer instead of the table's — `glm-5.3` and
+# `deepseek/deepseek-v4-pro` came back 1048576 where the table says 1000000, and
+# the suite went red on an untouched tree. CI never saw it (no proxy on the
+# runner), so the one documented gate lied exactly where it is developed. The
+# proxy path has its own coverage below, via a stub `curl` on PATH that sets
+# this variable deliberately.
 run(){ # script source-json
-  printf '%s' "$2" | CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/$1"
+  printf '%s' "$2" | ANTHROPIC_BASE_URL="" CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/$1"
 }
 
 echo "== SessionStart: armed -> injects digest, clears marker =="
@@ -616,6 +625,12 @@ ck "bracketed IPv6 non-loopback -> no lookup (privacy guard)" 'grep -q "window: 
 rm -f "$TMP/.reload/model"
 ANTHROPIC_BASE_URL="http://127.0.0.1.evil.com:9999" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
 ck "loopback-prefixed remote host -> no lookup (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+# Userinfo in the authority: the plugin's host parse cut at the first ":" and
+# read 127.0.0.1, while curl reads everything before "@" as credentials and
+# contacts the REAL host after it (audit F06, reproduced with a logging stub).
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999@evil.example/" STUB_CURL_MODE=ok run_proxy "stub-model" >/dev/null
+ck "userinfo in the base URL -> no lookup (privacy guard)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
 rm -f "$TMP/.reload/model"
 START=$(date +%s)
@@ -628,5 +643,167 @@ echo "== proxy_window: F05 guard holds — [1m] Claude id still resolves 1M with
 rm -f "$TMP/.reload/model"
 ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "claude-opus-5[1m]" >/dev/null
 ck "claude-opus-5[1m] stamps 1000000 (cc-proxy omits window for claude-* ids)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+
+# ── 2026-09-02 principal audit: F01/F02/F03 — the transcript scan ─────────────
+# Row builders. `main` is a main-thread assistant row; `side` is a SUBAGENT row
+# (isSidechain:true) as older Claude Code versions append them to the main
+# transcript (cc-repete cites "500 trailing sidechain lines" as a design
+# margin, not a measurement; current
+# versions write subagents/*.jsonl instead — the filter must be correct on both).
+main_row(){ printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"%s","usage":{"input_tokens":%d,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$1" "$2"; }
+side_row(){ printf '{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":%d,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$1"; }
+
+echo "== Stop hook: a subagent (sidechain) row last is NOT the main thread (audit F01) =="
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf 'context_budget_pct: 45\n' > "$TMP/.reload/config"
+printf 'model: claude-opus-4-8\nwindow: 1000000\n' > "$TMP/.reload/model"
+{ main_row claude-opus-4-8 500000; side_row 20000; } > "$TMP/t.jsonl"     # main 50%, subagent 2% LAST
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "sidechain row last: main thread's 50% still nudges" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "sidechain row last: stamp is NOT restamped to the subagent model" 'grep -q "model: claude-opus-4-8" "$TMP/.reload/model"'
+ck "sidechain row last: window stays 1M" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+echo "-- the [1m] shield survives a sidechain haiku row (F01 escalation: the F05 downgrade through a new door) --"
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+{ main_row claude-sonnet-4-5-20250929 300000; side_row 15000; } > "$TMP/t.jsonl"
+run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" >/dev/null
+{ main_row claude-sonnet-4-5-20250929 300000; side_row 15000; main_row claude-sonnet-4-5-20250929 320000; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "[1m] stamp survives a sidechain row" 'grep -q "claude-sonnet-4-5\[1m\]" "$TMP/.reload/model"'
+ck "32% of the real 1M window -> silent (no 5x false nudge)" '[ -z "$OUT" ]'
+
+echo "== Stop hook: one malformed transcript line does not blank the measurement (audit F02) =="
+printf 'model: claude-opus-4-8\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 100000; printf '{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","usa'; } > "$TMP/t.jsonl"
+head -c 3000000 /dev/zero | tr '\0' ' ' >> "$TMP/t.jsonl"   # 3MB: byte/4 would read as ~75%
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "truncated trailing line: the valid 10% row is measured -> silent" '[ -z "$OUT" ]'
+{ main_row claude-opus-4-8 100000; printf '{"type":"x","message":"a plain string"}\n'; printf '42\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "a row whose message is a string (and a bare number row) are skipped -> silent" '[ -z "$OUT" ]'
+ck "...and produce no stderr" '[ ! -s "$TMP/err.txt" ]'
+
+echo "-- a type-mismatched field on the LAST row must not resurrect an EARLIER row's number --"
+# The scan emits "tokens model" per row and the caller keeps the LAST line. If
+# tokens and model are combined in ONE fallible expression, a wrong TYPE in
+# either half kills the whole row under -R, `tail -n 1` then returns an EARLIER
+# row, and USED is a well-formed number that passes every validity check — so
+# the byte/4 fallback never fires and a 95% session measures as 2%. That is
+# silent-WRONG, strictly worse than the slurp this replaced (which produced no
+# answer at all, i.e. the safe over-count). Each half must fail independently.
+printf 'model: claude-opus-4-8\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 20000
+  printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":true,"usage":{"input_tokens":950000}}}\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "non-string model on the last row: its 95% is still measured (not the earlier 2%)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"95%\")" >/dev/null'
+# The other two shapes are unrecoverable (the token count itself is not a
+# number), so SKIPPING the row is the right answer — what must not happen is a
+# jq error on stderr, which is the signature of the whole-row abort above.
+rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 500000
+  printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":"950000"}}}\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "string input_tokens: row skipped, the last MEASURABLE row (50%) is used" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "...with no jq error on stderr" '[ ! -s "$TMP/err.txt" ]'
+rm -f "$TMP/.reload/notified"
+{ main_row claude-opus-4-8 500000
+  printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-8","usage":"n/a"}}\n'; } > "$TMP/t.jsonl"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>"$TMP/err.txt")"
+ck "non-object usage: row skipped, the last measurable row (50%) is used" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "...with no jq error on stderr either" '[ ! -s "$TMP/err.txt" ]'
+
+echo "== Stop hook: the scan is a tail WINDOW, with a full-file fallback (audit F03) =="
+# Mechanism pin by INVOCATION, not wall-clock: a jq shim logs every argv. On the
+# window path jq must never be handed the transcript PATH (it reads tail's
+# stdin) and must never be run with a slurp flag; on the fallback path it must
+# be handed the path exactly once. A shim is immune to machine speed.
+JQSHIM="$TMP/jqshim"; mkdir -p "$JQSHIM"; REALJQ="$(command -v jq)"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$JQ_LOG"\nexec %s "$@"\n' "$REALJQ" > "$JQSHIM/jq"; chmod +x "$JQSHIM/jq"
+run_shim(){ printf '%s' "$1" | JQ_LOG="$TMP/jq.log" PATH="$JQSHIM:$PATH" ANTHROPIC_BASE_URL="" CLAUDE_PROJECT_DIR="$TMP" bash "$H/stop-hook.sh"; }
+rm -f "$TMP/.reload/notified"; : > "$TMP/jq.log"
+{ for i in $(seq 3000); do main_row claude-opus-4-8 1000; done; main_row claude-opus-4-8 500000; } > "$TMP/t.jsonl"
+OUT="$(run_shim "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "window path: correct answer (50% nudges)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "window path: jq never received the transcript path" '! grep -qF "$TMP/t.jsonl" "$TMP/jq.log"'
+ck "no jq invocation slurps (-s / -rs)" '! grep -qE "(^| )-r?s( |$)" "$TMP/jq.log"'
+rm -f "$TMP/.reload/notified"; : > "$TMP/jq.log"
+{ main_row claude-opus-4-8 500000; for i in $(seq 2500); do side_row 100; done; } > "$TMP/t.jsonl"   # 2500 trailing sidechain rows > the window
+OUT="$(run_shim "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "fallback path: still the correct answer (50% nudges)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"50%\")" >/dev/null'
+ck "fallback path: jq received the transcript path exactly once" '[ "$(grep -cF "$TMP/t.jsonl" "$TMP/jq.log")" -eq 1 ]'
+
+echo "-- the \"tokens<space>model\" output CONTRACT, pinned at the seam --"
+# The caller splits LAST_TURN on the first space and treats "no space at all" as
+# "no model field". That guard looks dead — jq emits a trailing space even when
+# .message.model is absent, so the no-space branch is unreachable TODAY — but it
+# is the contract between the scan program and its consumer, and it is what
+# stops a tokens-only line from being read as a MODEL ID. Measured with the
+# guard removed and the program emitting tokens only: .reload/model is stamped
+# `model: 500000`, which destroys window resolution and the [1m] shield for the
+# rest of the session. Pin the contract at the seam so a future change to
+# TURN_SCAN_JQ's shape cannot silently take that branch.
+ck "scan program still emits a space-joined 'tokens model' pair" \
+  'printf "%s\n" "{\"type\":\"assistant\",\"isSidechain\":false,\"message\":{\"role\":\"assistant\",\"model\":\"m1\",\"usage\":{\"input_tokens\":7}}}" | jq -rR "$(sed -n "/^TURN_SCAN_JQ=/,/^$/p" "$H/stop-hook.sh" | sed "1s/^TURN_SCAN_JQ=.//; \$d" | sed "\$s/.\$//")" 2>/dev/null | grep -qx "7 m1"'
+# ...and that a tokens-ONLY line never reaches the stamp as a model id.
+printf 'model: claude-sonnet-4-5[1m]\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+main_row claude-opus-4-8 500000 > "$TMP/t.jsonl"
+run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" >/dev/null
+ck "a bare token count is never stamped as the model id" '! grep -qE "^model: [0-9]+$" "$TMP/.reload/model"'
+
+echo "== Stop hook: the README's own .reload/config example is honoured (audit F04) =="
+# The README block carries inline `# comments`; every reader must strip them,
+# or the pin it teaches is silently dropped. Feed the REAL README lines.
+README_CFG="$(sed -n '/^context_budget_pct: 45       #/,/^context_window: 1000000      #/p' "$(dirname "$H")/README.md")"
+ck "README still carries the three-line example (else this case is vacuous)" '[ "$(printf "%s\n" "$README_CFG" | wc -l)" -eq 3 ]'
+printf '%s\n' "$README_CFG" | sed 's/^context_window: 1000000/context_window: 200000/' > "$TMP/.reload/config"
+printf 'model: x\nwindow: 1000000\n' > "$TMP/.reload/model"; rm -f "$TMP/.reload/notified"
+main_row x 150000 > "$TMP/t.jsonl"     # 75% of the 200k PIN, 15% of the 1M stamp
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "commented context_window pin is honoured -> 75% nudges" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"75%\")" >/dev/null'
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot   # forced digest turn\ncontext_window: 200000\n' > "$TMP/.reload/config"
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "commented context_budget_mode: snapshot still blocks" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
+rm -f "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+
+echo "== Stop pass1: a DIRECTORY where the summarizing marker should be never blocks (audit F05) =="
+# `touch` succeeds on a directory, `-f` never matches it and `rm -f` never
+# removes it: pass 1 re-entered on every ordinary Stop (measured 3/3 blocks).
+# Invariant 2 — never block without the MARKER on disk — is the rule.
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\ncontext_window: 1000000\n' > "$TMP/.reload/config"
+main_row claude-opus-4-8 500000 > "$TMP/t.jsonl"
+rm -rf "$TMP/.reload/summarizing" "$TMP/.reload/pending" "$TMP/.reload/notified"; mkdir "$TMP/.reload/summarizing"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "directory at summarizing: first Stop does not block" 'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null 2>&1 || [ -z "$OUT" ]'
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "directory at summarizing: second Stop does not block either" 'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null 2>&1 || [ -z "$OUT" ]'
+rmdir "$TMP/.reload/summarizing"
+
+echo "-- a DIRECTORY at pending: the arm cannot be written; say so, never re-block --"
+printf -- '---\nsession_id: "S1"\n---\n## Next concrete step\nX\n' > "$TMP/.reload/session.md"
+rm -rf "$TMP/.reload/pending"; mkdir "$TMP/.reload/pending"
+touch -t 202001010000 "$TMP/.reload/summarizing"; touch "$TMP/.reload/session.md"
+OUT="$(run stop-hook.sh "{\"session_id\":\"S1\",\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "pass 2 with an unwritable arm warns instead of claiming success" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT armed\")" >/dev/null'
+ck "pass 2 with an unwritable arm never claims digest saved" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"digest saved\")" >/dev/null'
+rm -f "$TMP/.reload/notified"
+OUT="$(run stop-hook.sh "{\"transcript_path\":\"$TMP/t.jsonl\"}" 2>/dev/null)"
+ck "over budget with a directory at pending: no re-block (fail-open)" 'printf "%s" "$OUT" | jq -e ".decision == null" >/dev/null 2>&1 || [ -z "$OUT" ]'
+OUT="$(run precompact-hook.sh '{"session_id":"S1","trigger":"manual"}' 2>/dev/null)"
+ck "PreCompact with an unwritable arm warns" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"NOT armed\")" >/dev/null'
+rm -rf "$TMP/.reload/pending" "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+
+echo "== SessionStart banner: the intent is read from the FRONTMATTER, quoted or not (audit F08) =="
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf -- '---\nsession_id: "S1"\nintent: unquoted intent text\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+touch "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "unquoted intent still leads the banner" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"unquoted intent text\")" >/dev/null'
+printf -- '---\nsession_id: "S1"\n---\n## Open questions & risks\nintent: "BODY-INTENT untrusted"\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+touch "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "a body intent: line never reaches the banner" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"BODY-INTENT\")" >/dev/null'
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

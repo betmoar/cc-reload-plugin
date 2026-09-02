@@ -70,6 +70,14 @@ if [ -f "$SUMMARIZING" ]; then
     else
       touch "$PENDING" 2>/dev/null
     fi
+    # Verify the arm the way SessionStart reads it (-f). `printf >` fails and
+    # `touch` "succeeds" on a directory; claiming "reload armed" over an arm
+    # that can never rehydrate is the silent-wrong shape (audit 2026-09-02 F05).
+    if [ ! -f "$PENDING" ]; then
+      jq -n --arg m "⚠️ cc-reload: could not write the arm marker (.reload/pending is not a writable regular file) — reload NOT armed. Remove whatever is at .reload/pending, then run /snapshot before you /clear." \
+        '{systemMessage:$m}'
+      exit 0
+    fi
     if [ -n "$FRESH" ]; then
       jq -n --arg m "🧹 cc-reload: session digest saved to .reload/session.md and reload armed. Run /clear (or /compact) — it rehydrates automatically (you'll see a '🔄 restored' line; run /reload for the full sitrep)." \
         '{systemMessage:$m}'
@@ -104,19 +112,73 @@ PCT="$(cfg context_budget_pct)"; [[ "$PCT" =~ ^[0-9]+$ ]] || PCT=45
 TRANSCRIPT="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""')"
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
-# Best-effort: last assistant turn's total input tokens + model id from the
-# transcript, in ONE jq pass — the transcript is tens of MB near budget, and
-# this hook runs on every Stop, so it must not be slurped twice. Model ids
-# never contain spaces, so "tokens<space>model" splits unambiguously.
-LAST_TURN="$(jq -rs '
-    [ .[] | select(.message.role=="assistant") ] | last
-    | (((.message.usage // {})
-        | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))
-       | tostring)
-      + " " + (.message.model // "")
-  ' "$TRANSCRIPT" 2>/dev/null)"
+# Best-effort: the last MAIN-THREAD assistant turn's total input tokens + model
+# id from the transcript. Model ids never contain spaces, so "tokens<space>model"
+# splits unambiguously.
+#
+# The scan program is defined ONCE and used by both reads below (audit
+# 2026-09-02 F01/F02/F03 — the three defects were one `jq -rs` slurp):
+#   * per-line `fromjson? | objects` — a truncated/partial line, or a row whose
+#     `message` is not an object, is SKIPPED; the old slurp aborted the whole
+#     parse on one such line and silently fell back to the byte/4 estimate
+#     (3MB of transcript read as "~75%" where usage was 10%).
+#   * `.isSidechain != true` — subagent rows are not the main thread. Older
+#     Claude Code versions append them to the main transcript (cc-repete cites
+#     "500 trailing sidechain lines" as a design margin); current ones write
+#     subagents/*.jsonl. A subagent's small usage under-reported occupancy (no
+#     nudge while the main thread was over budget) AND its model restamped
+#     .reload/model — a haiku subagent stamped 200K, which on a [1m]-alias
+#     session permanently stripped the invariant-5 shield. `!= true` keeps rows
+#     where the field is absent/null.
+#   * one "tokens model" line per matching row; the caller keeps the LAST.
+#   * the two halves fail INDEPENDENTLY (audit 2026-09-02 F10). They are
+#     concatenated, so combining them in one fallible expression means a wrong
+#     TYPE in either half throws for the whole row — `tail -n 1` then returns an
+#     EARLIER row and USED is a well-formed number that passes every check
+#     below, so the byte/4 fallback never fires and a 95% session measures as
+#     2%. That is silent-WRONG, and strictly worse than the slurp this replaced
+#     (which produced NO answer, i.e. the safe over-count). `| numbers` and
+#     `| strings` drop a mistyped value instead of raising, so a non-string
+#     model costs only the model id — the row's token count still reports. A
+#     row with NO numeric usage field at all is unmeasurable, so it is skipped
+#     (`select(length > 0)`) rather than reported as 0: emitting "0" would make
+#     it the LAST line, and USED=0 sends the caller to the byte/4 estimate for
+#     the whole transcript instead of the last row that could actually be read.
+TURN_SCAN_JQ='fromjson? | objects
+  | select((.message|type)=="object" and .message.role=="assistant" and .isSidechain != true)
+  | [ .message.usage | objects
+      | (.input_tokens, .cache_read_input_tokens, .cache_creation_input_tokens) | numbers ] as $n
+  | select(($n | length) > 0)
+  | (($n | add) | tostring) + " " + (.message.model | strings // "")'
+
+# Read a tail WINDOW first, the whole file only if the window holds no
+# main-thread assistant row. The transcript is tens of MB near budget and this
+# runs on every Stop. Measured on 57MB/100k lines, SCAN-ONLY (the numbers in
+# CLAUDE.md invariant 14 are the WHOLE HOOK on the same transcript — 1.91s ->
+# 0.06s, 0.98s fallback — so the two sets differ by the hook's fixed ~30ms plus
+# process startup; neither is wrong, they measure different things): the slurp
+# 2.25s / 275MB RSS (whole hook 1.91s, over the ~1s budget), a full-file stream
+# 0.85s, the window 0.03s. A tail window is a
+# SUFFIX, so any main-thread row it contains is necessarily the file's last one
+# — the answer is identical to a full read. 2000 lines covers the documented
+# 500-sidechain-line hazard 4x; when even that is exceeded the fallback keeps
+# the answer correct at the old cost. jq reads tail's stdin on the window path
+# (never the path, never a slurp flag — the test pins that by invocation).
+WINDOW_LINES=2000
+LAST_TURN="$(tail -n "$WINDOW_LINES" "$TRANSCRIPT" 2>/dev/null | jq -rR "$TURN_SCAN_JQ" 2>/dev/null | tail -n 1)"
+if [ -z "$LAST_TURN" ]; then
+  LAST_TURN="$(jq -rR "$TURN_SCAN_JQ" "$TRANSCRIPT" 2>/dev/null | tail -n 1)"
+fi
 USED="${LAST_TURN%% *}"
 LIVE_MODEL="${LAST_TURN#* }"
+# Unreachable while TURN_SCAN_JQ emits the trailing space (it always does, even
+# with no `model` field) — but this is the CONTRACT between the scan program and
+# this consumer, not dead code. `${LAST_TURN#* }` returns the string UNCHANGED
+# when there is no space, so a tokens-only line would flow on as a model id and
+# stamp `.reload/model` with `model: 500000` (measured), destroying window
+# resolution and the [1m] shield for the rest of the session. Keep it; the shape
+# it depends on is pinned by "scan program still emits a space-joined pair".
+[ "$LIVE_MODEL" = "$LAST_TURN" ] && LIVE_MODEL=""   # no space at all -> no model field
 if ! [[ "$USED" =~ ^[0-9]+$ ]] || [ "$USED" -le 0 ]; then
   USED=$(( $(wc -c < "$TRANSCRIPT" 2>/dev/null || echo 0) / 4 ))   # fallback estimate
 fi
@@ -195,13 +257,22 @@ fi
 MODE="$(cfg context_budget_mode)"
 case "$MODE" in snapshot|checkpoint) MODE="snapshot" ;; *) MODE="notify" ;; esac
 
-if [ "$MODE" = "snapshot" ] && [ ! -f "$PENDING" ]; then
+# The arm gate is `-e`, not `-f`: ANY entry at .reload/pending suppresses a
+# re-block (fail-open). A directory there can never hold an arm, but treating it
+# as "not armed" re-entered pass 1 on every over-budget Stop (audit 2026-09-02
+# F05); SessionStart's rehydrate gate stays `-f` — a non-file arm rehydrates
+# nothing, and pass 2 / PreCompact say so when they cannot write one.
+if [ "$MODE" = "snapshot" ] && [ ! -e "$PENDING" ]; then
   # pass 1: block + re-inject a focused snapshot brief (NOT a continuation of work).
   # If the marker cannot be written (read-only dir, .reload is a file, disk full),
   # do NOT block: pass 2 keys off that marker, so blocking without it would make
   # every future Stop re-enter pass 1 — an endless snapshot prompt.
+  # The write is VERIFIED with -f, the test every reader uses: `touch` succeeds
+  # on a directory, which -f then never matches and `rm -f` never removes, so
+  # a stray `mkdir .reload/summarizing` blocked EVERY ordinary Stop (measured
+  # 3/3; audit 2026-09-02 F05). Invariant 2: never block without the marker.
   ensure_reload_dir
-  touch "$SUMMARIZING" 2>/dev/null || exit 0
+  { touch "$SUMMARIZING" 2>/dev/null && [ -f "$SUMMARIZING" ]; } || exit 0
   REINJECT='--- cc-reload context snapshot: write a session digest, then STOP ---
 Context is ~'"$OCCUPANCY"'% of the window (budget '"$PCT"'%). Reset before rot sets in. Capture the working thread so the next session resumes losslessly.
 

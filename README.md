@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.3.1.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.3.3.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -52,8 +52,9 @@ and **auto-detects each user's window** — nothing is hardcoded to one setup:
 1. `SessionStart` stamps the live `model` + resolved window to `.reload/model` when Claude Code
    supplies a model id (an **optional** SessionStart field — best-effort). An unrecognized id is
    assumed to be a large (1M) window.
-2. The `Stop` hook gets **no model id**, so it reads the model from the **last assistant turn** in
-   the transcript and re-stamps `.reload/model` if it changed (mid-session `/model` switches are
+2. The `Stop` hook gets **no model id**, so it reads the model from the **last main-thread assistant
+   turn** in the transcript (subagent rows are skipped; a malformed line is skipped, not fatal; only
+   the tail of the file is read unless it has to look further) and re-stamps `.reload/model` if it changed (mid-session `/model` switches are
    picked up). One exception: the transcript carries the bare API id, never a `[1m]` alias suffix —
    if the stamp is a `[1m]` form of the *same* model (e.g. `sonnet[1m]` vs `claude-sonnet-4-5-…`),
    the stamp stands, so a 1M-beta session is never downgraded to its 200K base id. It then reads
@@ -180,6 +181,9 @@ context_budget_mode: notify  # notify (default: nudge, never blocks) | snapshot 
 context_window: 1000000      # AUTHORITATIVE window override in tokens. Set this for your main model.
 ```
 
+Trailing `# comments` like the ones above are allowed on any line (every reader strips them);
+`/reload-budget` writes the file for you and never needs them.
+
 - **`context_budget_pct`** — the proactive trigger. Set it low for context-sensitive tasks
   (`/reload-budget 30`), higher for more work per session. Default **45**.
 - **`context_budget_mode`** — how hard the budget escalates. **`notify`** (default) emits a
@@ -212,8 +216,9 @@ cc-reload/
 ├── skills/maintaining-session-continuity/SKILL.md
 │   └── evals/trigger-eval.json       # triggering benchmark for the skill description
 ├── templates/session.md
-├── tests/{test-hooks.sh, test-statusline.sh, test-config.sh, test-e2e.sh, test-claim-digest.sh}  # smoke + e2e (run: bash tests/test-*.sh)
-├── .github/workflows/ci.yml       # bash -n + shellcheck + JSON validation + the test suites
+├── tests/run-all.sh                  # THE local gate: JSON + bash -n + shellcheck + every tests/test-*.sh (what CI runs)
+├── tests/{test-hooks, test-statusline, test-config, test-e2e, test-claim-digest, test-release}.sh
+├── .github/workflows/ci.yml       # pinned shellcheck 0.10.0 + `bash tests/run-all.sh`
 ├── CHANGELOG.md                   # release history (Keep a Changelog)
 ├── CLAUDE.md                      # maintainer handoff: architecture, invariants, change guide
 └── LICENSE                        # MIT

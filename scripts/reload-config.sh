@@ -33,8 +33,11 @@ esac
 
 if [ "$MODE" = "get" ]; then
   [ -f "$CONFIG" ] || exit 0
+  # Same strip as hooks/lib.sh kv(): trailing `# comment`, whitespace, one
+  # layer of quotes. Four readers parse this file (see kv()'s comment);
+  # tests/test-config.sh "reader PARITY" pins them to each other.
   grep -E "^$KEY:" "$CONFIG" | head -1 \
-    | sed -E "s/^$KEY:[[:space:]]*//; s/[[:space:]]+\$//; s/^\"(.*)\"\$/\1/"
+    | sed -E "s/^$KEY:[[:space:]]*//; s/[[:space:]]*#.*\$//; s/[[:space:]]+\$//; s/^\"(.*)\"\$/\1/"
   exit 0
 fi
 

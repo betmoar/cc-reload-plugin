@@ -25,6 +25,14 @@ if [ -n "$SESSION_ID" ]; then
 else
   touch "$PENDING" 2>/dev/null
 fi
+# Verify with -f, the test SessionStart's rehydrate gate uses: a directory at
+# .reload/pending takes a `touch` but can never be an arm (audit 2026-09-02
+# F05). Say so — an unarmed compaction is exactly the loss this hook backstops.
+# Still exit 0: a warning, never a failed compaction.
+if [ ! -f "$PENDING" ]; then
+  jq -n --arg m "⚠️ cc-reload: could not write the arm marker (.reload/pending is not a writable regular file) — reload NOT armed; this compaction will not rehydrate. Remove whatever is at .reload/pending, then run /snapshot." \
+    '{systemMessage:$m}'
+fi
 
 if [ ! -f "$DIGEST" ]; then
   # Mechanical fallback — no agent-authored digest exists yet. Leave an honest

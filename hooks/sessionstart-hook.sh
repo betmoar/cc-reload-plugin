@@ -105,7 +105,8 @@ BODY="$(cat "$DIGEST")"
 # systemMessage fires AFTER /clear's screen wipe and is shown in the blank
 # terminal — it is the reliable visible signal for all trigger sources. Keep it.
 # additionalContext carries the full digest for Claude to read.
-INTENT="$(awk -F'"' '/^intent:/{print $2; exit}' "$DIGEST" 2>/dev/null)"
+# Frontmatter-scoped, quoted or not (hooks/lib.sh digest_field — audit F08).
+INTENT="$(digest_field intent)"
 
 # Extract first bullet from each section for summary
 _first_bullet() {

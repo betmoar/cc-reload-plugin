@@ -36,6 +36,10 @@ PROJ="$(printf '%s' "$IN" | jq -r '.workspace.project_dir // .cwd // empty' 2>/d
 [ -n "$PCT" ] || exit 0
 PCTI="${PCT%%.*}"; [[ "$PCTI" =~ ^[0-9]+$ ]] || exit 0
 
+# Config lines are read with the SAME strip as hooks/lib.sh kv(): trailing
+# `# comment`, whitespace, one layer of quotes (audit 2026-09-02 F04 — the
+# README's example carries inline comments). tests/test-config.sh "reader
+# PARITY" pins the three copies here to kv() and reload-config.sh.
 # Resolve the window tag the same way the Stop hook does (issue #9): a VALID
 # `context_window` override in .reload/config wins; else the window stamped to
 # .reload/model by SessionStart (which holds the proxy-resolved window for
@@ -46,14 +50,14 @@ WROOT=""
 if [ -n "$PROJ" ] && [ -d "$PROJ/.reload" ]; then
   if [ -f "$PROJ/.reload/config" ]; then
     WROOT="$(grep -E '^context_window:' "$PROJ/.reload/config" 2>/dev/null | head -1 \
-             | sed -E 's/^context_window:[[:space:]]*//; s/[[:space:]]+$//; s/^"(.*)"$/\1/')"
+             | sed -E 's/^context_window:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//; s/^"(.*)"$/\1/')"
   fi
   # Only a non-empty/valid override pins; .reload/model only when no override.
   if { [[ "$WROOT" =~ ^[0-9]+$ ]] && [ "$WROOT" -gt 0 ]; }; then
     SIZE="$WROOT"
   elif [ -f "$PROJ/.reload/model" ]; then
     mwin="$(grep -E '^window:' "$PROJ/.reload/model" 2>/dev/null | head -1 \
-            | sed -E 's/^window:[[:space:]]*//; s/[[:space:]]+$//')"
+            | sed -E 's/^window:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//')"
     { [[ "$mwin" =~ ^[0-9]+$ ]] && [ "$mwin" -gt 0 ]; } && SIZE="$mwin"
   fi
 fi
@@ -74,7 +78,7 @@ fi
 BUDGET=45
 if [ -n "$PROJ" ] && [ -f "$PROJ/.reload/config" ]; then
   b="$(grep -E '^context_budget_pct:' "$PROJ/.reload/config" 2>/dev/null | head -1 \
-        | sed -E 's/^context_budget_pct:[[:space:]]*//; s/[[:space:]]+$//; s/^"(.*)"$/\1/')"
+        | sed -E 's/^context_budget_pct:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//; s/^"(.*)"$/\1/')"
   [[ "$b" =~ ^[0-9]+$ ]] && BUDGET="$b"
 fi
 
