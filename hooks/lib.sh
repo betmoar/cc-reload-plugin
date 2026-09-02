@@ -38,13 +38,22 @@ repete_active() {
   [ -f "$f" ] && grep -qE '^active:[[:space:]]*true[[:space:]]*$' "$f"
 }
 
-# Read a "key: value" line from a file (absent -> empty). Strips only the
-# surrounding whitespace and a single layer of surrounding quotes, so a string
-# value keeps any internal spaces.
+# Read a "key: value" line from a file (absent -> empty). Strips a trailing
+# `# comment`, the surrounding whitespace and a single layer of surrounding
+# quotes, so a string value keeps any internal spaces.
+#
+# The comment strip is load-bearing (audit 2026-09-02 F04): the README's own
+# `.reload/config` example is written `key: value   # comment`, and every value
+# used to come back WITH the comment, fail its validation and silently fall
+# back to the default — the documented `context_window` pin was dropped. Values
+# here are numbers, enums and model ids; `#` is never legitimate content.
+# FOUR readers parse this file and must agree: this function,
+# scripts/reload-config.sh `get`, and scripts/statusline.sh (three inline
+# copies) — tests/test-config.sh "reader PARITY" pins them to each other.
 kv() {
   [ -f "$2" ] || return 0
   grep -E "^$1:" "$2" | head -1 \
-    | sed -E "s/^$1:[[:space:]]*//; s/[[:space:]]+\$//; s/^\"(.*)\"\$/\1/"
+    | sed -E "s/^$1:[[:space:]]*//; s/[[:space:]]*#.*\$//; s/[[:space:]]+\$//; s/^\"(.*)\"\$/\1/"
 }
 cfg() { kv "$1" "$CONFIG"; }
 
@@ -81,16 +90,27 @@ frontmatter_closed() {
 # model-written and untrusted (invariant 8) — an "Open questions" bullet reading
 # `session_id: whatever` would be picked up as the owner. Scope to the YAML
 # frontmatter: start at the opening ---, stop at the closing one. One awk pass.
-digest_owner() {
+digest_owner() { digest_field session_id; }
+
+# digest_field <key> -> the FRONTMATTER value of <key>, or "" when the digest,
+# the frontmatter region or the key is absent. Surrounding quotes are stripped
+# (one layer, only when both are present); anything else is returned verbatim
+# — an unquoted value is a value, not an absence (audit 2026-09-02 F08: the
+# banner's `intent` used an `awk -F'"'` that dropped every unquoted intent and
+# truncated an escaped one). Frontmatter-scoped like digest_owner() because the
+# BODY is model-written and untrusted (invariant 8): a body line `intent:` or
+# `session_id:` must never be read as the field. <key> is a literal identifier
+# (session_id, intent, updated_at) — never user input.
+digest_field() {
   [ -f "$DIGEST" ] || return 0
   frontmatter_closed || return 0
-  awk '
+  awk -v key="$1" '
     NR==1 && $0 != "---" { exit }          # no frontmatter at all
     NR>1 && $0 == "---"  { exit }          # closing fence: stop before the body
-    /^session_id:/ {
-      sub(/^session_id:[[:space:]]*/, "")
+    index($0, key ":") == 1 {
+      sub("^" key ":[[:space:]]*", "")
       sub(/[[:space:]]+$/, "")
-      gsub(/^"|"$/, "")
+      if ($0 ~ /^".*"$/) { sub(/^"/, ""); sub(/"$/, "") }
       print; exit
     }
   ' "$DIGEST" 2>/dev/null
@@ -221,6 +241,11 @@ proxy_window() {
   # replaces). Only after the bracketed form is handled is it safe to cut at the
   # first ":" or "/", which delimits port/path for the unbracketed hosts.
   local host="${ANTHROPIC_BASE_URL#*://}"
+  # Userinfo is refused OUTRIGHT (audit 2026-09-02 F06): the cuts below read
+  # `http://127.0.0.1:4000@evil.example/` as host 127.0.0.1, while curl reads
+  # everything before "@" as credentials and contacts evil.example. A loopback
+  # proxy never needs userinfo, so any "@" in the authority ends the lookup.
+  case "${host%%/*}" in *@*) return 1 ;; esac
   case "$host" in
     \[*\]*) host="${host#\[}"; host="${host%%\]*}" ;;   # [::1]:4000 -> ::1
     *)      host="${host%%/*}"; host="${host%%:*}" ;;   # 127.0.0.1:4000 -> 127.0.0.1

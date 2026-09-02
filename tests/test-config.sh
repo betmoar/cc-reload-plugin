@@ -69,4 +69,32 @@ rc set context_owner_window abc >/dev/null 2>&1
 ck "rejected value leaves config intact" '[ "$(rc get context_owner_window)" = "3600" ]'
 ck "unrelated keys preserved" 'rc set context_budget_pct 30 >/dev/null; [ "$(rc get context_owner_window)" = "3600" ]'
 
+
+echo "== inline # comments are stripped by EVERY reader (audit F04) =="
+# The README's own example block writes `key: value   # comment`. Four readers
+# parse .reload/config (hooks/lib.sh kv/cfg, reload-config.sh get, and three
+# inline copies in scripts/statusline.sh); each silently returned the comment
+# as part of the value and every validation then fell back to its default.
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)"
+printf 'context_budget_pct: 30       # act at this %% of the window\ncontext_budget_mode: snapshot  # forced digest turn\ncontext_window: 200000      # pinned\ncontext_owner_window: 60 # one minute\n' > "$TMP/.reload/config"
+ck "reload-config get strips the comment (pct)" '[ "$(rc get context_budget_pct)" = "30" ]'
+ck "reload-config get strips the comment (mode)" '[ "$(rc get context_budget_mode)" = "snapshot" ]'
+ck "reload-config get strips the comment (window)" '[ "$(rc get context_window)" = "200000" ]'
+libcfg(){ CLAUDE_PROJECT_DIR="$TMP" bash -c 'source "$0/lib.sh"; cfg "$1"' "$H" "$1"; }
+ck "lib.sh cfg strips the comment (pct)" '[ "$(libcfg context_budget_pct)" = "30" ]'
+ck "lib.sh cfg strips the comment (mode)" '[ "$(libcfg context_budget_mode)" = "snapshot" ]'
+ck "lib.sh cfg strips the comment (window)" '[ "$(libcfg context_window)" = "200000" ]'
+ck "lib.sh cfg strips the comment (owner window)" '[ "$(libcfg context_owner_window)" = "60" ]'
+ESC="$(printf '\033')"
+SEG="$(printf '{"context_window":{"used_percentage":12,"context_window_size":1000000},"workspace":{"project_dir":"%s"}}' "$TMP" | bash "$S/statusline.sh" | sed "s/${ESC}\[[0-9;]*m//g")"
+ck "statusline strips the comment: pinned 200k tag + budget 30" '[ "$SEG" = "ctx[200k] 12%·30" ]'
+echo "-- reader PARITY: the four copies must agree on every fixture line --"
+for fixture in 'context_budget_pct: 45' 'context_budget_pct:45' 'context_budget_pct: "45"' 'context_budget_pct: 45 #c' 'context_budget_pct: 45   ' 'context_budget_pct: 45#c'; do
+  printf '%s\n' "$fixture" > "$TMP/.reload/config"
+  a="$(rc get context_budget_pct)"; b="$(libcfg context_budget_pct)"
+  c="$(printf '{"context_window":{"used_percentage":1,"context_window_size":1000000},"workspace":{"project_dir":"%s"}}' "$TMP" | bash "$S/statusline.sh" | sed "s/${ESC}\[[0-9;]*m//g" | sed 's/.*·//')"
+  ck "parity on [$fixture]: get=$a cfg=$b bar=$c" '[ "$a" = "45" ] && [ "$b" = "45" ] && [ "$c" = "45" ]'
+done
+rm -f "$TMP/.reload/config"
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

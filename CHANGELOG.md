@@ -4,6 +4,72 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-02
+
+Principal-architect audit (`docs/audit-2026-09-02-principal.md`): nine findings, seven fixed here
+with a red-run test each, two closed by new tooling. No behaviour change on the ordinary path.
+
+### Fixed
+- **The Stop hook measured whichever agent spoke last, not the main thread** (audit F01). The
+  transcript scan took the last `message.role=="assistant"` row with no `isSidechain` filter, so on
+  Claude Code versions that append subagent rows to the main transcript a Stop after an Agent
+  dispatch read the subagent's tiny usage (no nudge while the main thread was over budget) AND
+  restamped `.reload/model` with the subagent's model — a haiku subagent stamped 200K, which on a
+  `[1m]`-alias session permanently stripped the invariant-5 shield (5x inflated occupancy from then
+  on). Subagent rows are now skipped (`.isSidechain != true` — absent/null keeps the row, so both
+  transcript layouts work; current versions write `subagents/*.jsonl` instead).
+- **One malformed transcript line silently replaced the measurement with the byte/4 estimate**
+  (audit F02). `jq -rs` slurped the file as one array and aborted on a truncated line or a row
+  whose `message` is not an object; 3MB of transcript then read as "~75%" where usage was 10%.
+  The scan is now per-line (`-R`, `fromjson? | objects`): a bad line is skipped, not fatal.
+- **The Stop hook ran over its own ~1s budget on a large transcript** (audit F03). Measured on
+  57MB/100k lines: the slurp took 2.25s and 275MB RSS (whole hook 1.91s). The scan now reads a
+  `tail -n 2000` window through a stream (0.06s whole hook) and falls back to a full-file stream
+  only when the window holds no main-thread row (0.98s worst case measured with 2500 trailing
+  subagent rows). A tail window is a suffix, so its last main-thread row is the file's — the
+  answer is identical to a full read. The mechanism is pinned by invocation (a `jq` shim), never
+  by wall-clock.
+- **Inline `# comments` in `.reload/config` silently discarded the value — including in the
+  README's own example** (audit F04). Every reader (`hooks/lib.sh` `kv()`, `reload-config.sh get`,
+  three inline copies in `statusline.sh`) returned `45   # act at this %…`, failed validation and
+  fell back to the default — a hand-written `context_window` pin was dropped, `snapshot` mode
+  reverted to notify. All four readers now strip a trailing comment; a reader-parity test pins the
+  copies to each other, and the README block itself is fed to the Stop hook in the suite.
+- **A directory where `.reload/summarizing` should be made pass 1 block on EVERY ordinary Stop**
+  (audit F05, fail-closed — invariant 2). `touch` succeeds on a directory, `-f` never matches it,
+  `rm -f` never removes it (measured 3/3 blocks). Pass 1 now verifies the marker with `-f` after
+  writing it or refuses to block; the arm gate is `-e` so any entry at `.reload/pending` suppresses
+  a re-block; pass 2 and PreCompact verify the arm with `-f` and say "reload NOT armed" instead of
+  claiming success over an arm that can never rehydrate.
+- **`ANTHROPIC_BASE_URL` with userinfo bypassed the loopback allowlist** (audit F06, P3).
+  `http://127.0.0.1:4000@evil.example/` parsed as host `127.0.0.1` while curl contacts
+  `evil.example`. Any `@` in the authority now ends the lookup — a loopback proxy never needs
+  credentials in its URL.
+- **The restore banner dropped an unquoted `intent` and truncated an escaped one** (audit F08).
+  Read through the new frontmatter-scoped `digest_field()` (quoted or not; a body `intent:` line
+  is never read — invariant 8).
+
+### Added
+- **`tests/run-all.sh`** — the one local gate: JSON validity, `bash -n`, shellcheck (loud warning
+  when absent; CI enforces a pinned 0.10.0), then every `tests/test-*.sh` by glob. CI calls it, so
+  a new suite can no longer pass locally and never run in CI (audit F09).
+- **`tests/test-release.sh`** — release and structural contracts: the version trio
+  (`plugin.json` == newest CHANGELOG heading == README status line — the README said 0.3.1 at
+  0.3.2, audit F07), the newest CHANGELOG section has a body, every `hooks.json` command resolves
+  through `${CLAUDE_PLUGIN_ROOT}` to an existing script, `plugin.json` declares no hooks, the
+  statusline manifest's render path exists, CI invokes `run-all.sh` with a pinned shellcheck, and
+  every `file.sh:NN` citation and quoted test name in CLAUDE.md resolves (it caught one paraphrase
+  on its first run).
+- `hooks/lib.sh` `digest_field <key>` — frontmatter-scoped field read; `digest_owner()` is now
+  `digest_field session_id`.
+
+### Changed
+- CI pins shellcheck 0.10.0 (container) instead of whatever `ubuntu-latest` ships, and runs
+  `tests/run-all.sh` instead of a hand-kept suite list.
+- CLAUDE.md: the transcript-scan decision rewritten (windowed stream, not a slurp), three new
+  invariants (14–16), couplings rows for the scan program / the four config readers / marker
+  writers / the version trio, per-component playbooks, and a refreshed backlog.
+
 ## [0.3.2] - 2026-08-05
 
 ### Fixed
