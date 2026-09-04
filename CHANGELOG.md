@@ -22,6 +22,18 @@ All notable changes to cc-reload are documented here. The format follows
   proxy: `glm-4.6[1m]` → 200000, `glm-5.3[1m]` → 1048576 (previously 1000000 for both via the
   heuristic). Five new stub tests; both strips are mutation-verified (reverting either turns its
   named test red).
+- **`repete_active()` read `.repete/loop.local.md` with a bare whole-file grep, wrong in both
+  directions (issue #12).** The file is a published contract (declared in cc-repete's CLAUDE.md,
+  betmoar/cc-repete-plugin#27): path + `active` key + value `true` in the FIRST frontmatter block,
+  with the producer's tolerances. The old grep matched BODY prose quoting `active: true` — a
+  torn-down loop whose handoff note still quoted the schema read as LIVE, and cc-reload silently
+  stood down forever (no snapshot, no rehydrate) against a loop that was over. It also rejected
+  the producer's quoted form `active: "true"` — a live loop read as over, and cc-reload ran
+  alongside it, the exact collision the stand-down exists to prevent. The reader now mirrors
+  cc-repete's own: first `---` block only, one optional quote layer, one optional trailing CR;
+  a torn write (opener, no closer) reads as frontmatter-to-EOF exactly like the producer's
+  `fm()`. Eight new cases pin the contract as the consumer reads it; mutation-verified (reverting
+  to the bare grep turns the four scope/quote cases red).
 
 ## [0.3.3] - 2026-09-02
 

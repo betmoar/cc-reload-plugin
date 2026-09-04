@@ -11,8 +11,9 @@ to rehydrate it automatically on the next `/clear` or `/compact`.
 
 User note (optional): **$ARGUMENTS**
 
-If a cc-repete loop is active (`.repete/loop.local.md` has `active: true`), STOP — cc-repete
-owns continuity here; tell the user to use `/repete-continue` instead and do nothing.
+If a cc-repete loop is active (`.repete/loop.local.md` frontmatter has `active: true` in the
+first `---` block), STOP — cc-repete owns continuity here; tell the user to use
+`/repete-continue` instead and do nothing.
 
 Otherwise:
 

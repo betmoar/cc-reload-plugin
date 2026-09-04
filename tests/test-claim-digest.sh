@@ -142,6 +142,38 @@ rm -rf "$TMP/.repete"
 ck "repete gone -> guard resumes" 'claim S_B >/dev/null; [ -f "$TMP/.reload/session.S_A.md" ]'
 reset_reload
 
+echo "== repete_active: the read API of .repete/loop.local.md, as cc-repete reads it =="
+# .repete/loop.local.md is a PUBLISHED CONTRACT (betmoar/cc-repete-plugin#27, declared
+# in its CLAUDE.md "what a loop publishes"): path + `active` key + value `true` in the
+# FIRST frontmatter block. cc-repete's own reader scopes to that block and accepts the
+# optional quotes and CR (hooks/stop-hook.sh fm()/no-jq awk); a bare whole-file grep —
+# the shape this replaced (issue #12) — matched BODY prose quoting "active: true" (a
+# torn-down loop read as live: cc-reload stood down forever) and rejected `active: "true"`
+# (a live loop read as over: cc-reload ran alongside it). Mirror the producer's reader,
+# pin it read-as-consumer with the file written by cc-repete's OWN scaffold shape.
+RP="$TMP/.repete/loop.local.md"; mkdir -p "$TMP/.repete"
+
+printf -- '---\nactive: true\nphase: 1\n---\n# payload\n' > "$RP"
+ck "plain active: true in block 1 -> active" 'have_fn repete_active && libcall repete_active'
+printf -- '---\nactive: false\nphase: 9\n---\n# handoff note quotes the schema:\nactive: true\n' > "$RP"
+ck "body line active: true does NOT count (issue #12)" 'have_fn repete_active && ! libcall repete_active'
+printf -- '---\nactive: "true"\n---\n' > "$RP"
+ck "quoted true counts (producer strips one quote layer)" 'libcall repete_active'
+printf -- '---\nactive: true\r\n---\n' > "$RP"
+ck "CRLF form counts" 'libcall repete_active'
+printf -- 'active: true\n' > "$RP"
+ck "no frontmatter at all -> not active" 'have_fn repete_active && ! libcall repete_active'
+# Torn write (opener, no closer): the producer's fm() reads frontmatter to EOF,
+# so it sees a LIVE loop — cc-reload standing down alongside is the coordinated
+# answer, not a divergence. The false twin stays negative.
+printf -- '---\nactive: true\n' > "$RP"
+ck "torn write: active: true with no closer still counts" 'libcall repete_active'
+printf -- '---\nactive: false\n' > "$RP"
+ck "torn write: active: false with no closer -> not active" 'have_fn repete_active && ! libcall repete_active'
+printf -- '---\nmission: x\n---\n---\nactive: true\n---\n' > "$RP"
+ck "a SECOND block's active: true does not count" 'have_fn repete_active && ! libcall repete_active'
+rm -rf "$TMP/.repete"
+
 echo "== claim-digest: a hostile owner id cannot escape .reload/ =="
 # The frontmatter is model-written and untrusted. cc-operator hit exactly this
 # (ops-verdict.sh:276 records a 2026-07-10 path traversal through the same door).

@@ -33,9 +33,32 @@ ensure_reload_dir() {
 }
 
 # True when a cc-repete loop is active in this project -> cc-reload stands down.
+#
+# .repete/loop.local.md is a PUBLISHED CONTRACT (betmoar/cc-repete-plugin#27,
+# declared in cc-repete's CLAUDE.md "what a loop publishes"): the path, the
+# `active` key, the value `true` — in the FIRST frontmatter block, with the
+# producer's tolerances (one optional layer of surrounding quotes, one optional
+# trailing CR). This mirrors cc-repete's own reader (the no-jq awk in its
+# hooks/stop-hook.sh; its fm() reads the same shape), because two readers of
+# one file must not disagree about when a loop is over. The bare whole-file
+# grep this replaces (issue #12) was wrong in BOTH directions: BODY prose
+# quoting "active: true" (a handoff note, a lesson card — the payload below the
+# frontmatter is loop prose) read as a LIVE loop after teardown, so cc-reload
+# stood down forever against a loop that was over; and `active: "true"` (quoted,
+# a form the producer accepts) read as NOT active, so cc-reload ran alongside a
+# live loop — the exact collision the stand-down exists to prevent. A torn write
+# (opener, no closer) reads as frontmatter-to-EOF exactly like the producer's
+# fm(): a torn `active: true` stands cc-reload down until cc-repete rewrites
+# the file — coordinated on both sides, not a divergence.
 repete_active() {
   local f="$PROJECT_DIR/.repete/loop.local.md"
-  [ -f "$f" ] && grep -qE '^active:[[:space:]]*true[[:space:]]*$' "$f"
+  [ -f "$f" ] || return 1
+  [ -n "$(awk '
+    BEGIN{f=0}
+    /^---[[:space:]]*$/ {f++; next}
+    f==1 && /^active:[[:space:]]*"?true"?[[:space:]]*\r?$/ {print "y"; exit}
+    f>=2 {exit}
+  ' "$f" 2>/dev/null)" ]
 }
 
 # Read a "key: value" line from a file (absent -> empty). Strips a trailing

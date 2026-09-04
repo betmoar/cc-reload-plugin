@@ -102,7 +102,8 @@ not disclosed or configurable as a %, which is exactly why cc-reload drives the 
 | `PreToolUse`   | `Write`\|`Edit`              | Before the model overwrites `.reload/session.md`, side-files a *different* session's recent digest and warns. Never blocks the write. |
 
 Every hook's first actions: **fail open if `jq` is missing**, and **stand down if a cc-repete loop
-is active** (`.repete/loop.local.md` → `active: true`). See `hooks/lib.sh`.
+is active** (`.repete/loop.local.md` frontmatter `active: true`, scoped to the first `---` block
+exactly as cc-repete itself reads it — a published contract, cc-repete#27). See `hooks/lib.sh`.
 
 In `snapshot` mode the Stop hook additionally guards its own two-pass handshake: it never blocks
 when `stop_hook_active` is set without the `summarizing` marker (a broken handshake must not
