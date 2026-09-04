@@ -6,6 +6,17 @@ All notable changes to cc-reload are documented here. The format follows
 
 ## [0.4.1] - 2026-09-04
 
+### Added
+- **Release workflow (`.github/workflows/release.yml`)** — the tag build now gates and publishes
+  itself, the same shape as cc-repete's: a `v<x.y.z>` tag re-runs the full gate
+  (`tests/run-all.sh` + the pinned shellcheck container), refuses to ship on any
+  tag ≠ `plugin.json` ≠ newest CHANGELOG heading mismatch (`scripts/release-gate.mjs`, ported
+  with its 13-case node suite `tests/test-release-gate.mjs`), and publishes the GitHub release
+  with that version's CHANGELOG section as the body — release notes are extracted from the
+  changelog, never hand-written. `tests/run-all.sh` runs the node suite too (loud skip without
+  node, the lint-warning pattern), and `tests/test-release.sh` pins the workflow's shape with
+  seven new checks (red-verified: deleting release.yml turns exactly them red).
+
 ### Fixed
 - **`repete_active()` tolerated a quote per end, diverging from cc-repete's canonical reader
   (issue #14).** cc-repete settled the quote rule in its #30 / PR #31 (v0.2.5): quotes on

@@ -50,6 +50,15 @@ ck "ci.yml does not hand-list suites any more" '! grep -qE "bash tests/test-[a-z
 ck "ci.yml pins the shellcheck version it runs" 'grep -qE "shellcheck[^ ]*:v?0\.[0-9]+\.[0-9]+" .github/workflows/ci.yml'
 ck "run-all.sh globs the suites" 'grep -q "for t in tests/test-\*.sh" tests/run-all.sh'
 
+echo "== release.yml: the tag build gates the trio and runs the same suites =="
+ck "release.yml fires on v-tags" 'grep -qE "tags:.*\[.*\"v\*\"" .github/workflows/release.yml'
+ck "release.yml runs the release gate script" 'grep -q "release-gate.mjs" .github/workflows/release.yml'
+ck "release.yml runs tests/run-all.sh (same gate as ci.yml)" 'grep -q "bash tests/run-all.sh" .github/workflows/release.yml'
+ck "release.yml pins the shellcheck version it runs" 'grep -qE "shellcheck[^ ]*:v?0\.[0-9]+\.[0-9]+" .github/workflows/release.yml'
+ck "release.yml runs the gate's own node suite" 'grep -q "node --test tests/test-release-gate.mjs" .github/workflows/release.yml'
+ck "release.yml publishes from the extracted CHANGELOG notes, never hand-written" 'grep -q -- "--notes-file release-notes.md" .github/workflows/release.yml'
+ck "run-all.sh runs the release-gate node suite too" 'grep -q "node --test tests/test-release-gate.mjs" tests/run-all.sh'
+
 echo "== CLAUDE.md: file:line citations resolve, and named tests exist =="
 # Every `something.sh:NN` in CLAUDE.md must name a real line; the PENDING row's
 # citations must land ON the arm write (a moved line makes the map lie).

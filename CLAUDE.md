@@ -357,7 +357,11 @@ comparison (invariant 3). Verify: a `test-hooks.sh` case with a DIRECTORY at the
 1. `bash tests/run-all.sh` green. 2. Bump `.claude-plugin/plugin.json`, add `## [x.y.z] - date`
 newest in CHANGELOG.md WITH a body, set the README `Status: **vx.y.z.**` line — same commit
 (`tests/test-release.sh` fails on any two of the three disagreeing). 3. Tag `vx.y.z` on main after
-the squash. Never bump plugin.json alone: it is the plugin cache key, so a bump that misses it ships
+the squash — the tag build (`.github/workflows/release.yml`) re-runs run-all + the node
+release-gate suite, refuses any tag ≠ plugin.json ≠ newest CHANGELOG heading
+(`scripts/release-gate.mjs`), and publishes the GitHub release with that version's CHANGELOG
+section as the body (notes are EXTRACTED, never hand-written — write them in CHANGELOG.md).
+Never bump plugin.json alone: it is the plugin cache key, so a bump that misses it ships
 an update nobody receives, and a bump that misses CHANGELOG ships a release with no notes.
 - **When in doubt, fail open and silent.** The worst thing this plugin can do is interrupt or
   corrupt a session it was meant to protect.

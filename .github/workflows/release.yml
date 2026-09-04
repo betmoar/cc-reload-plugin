@@ -1,0 +1,60 @@
+# Cutting a release (see CHANGELOG.md and CLAUDE.md "Releasing"): squash-merge
+# to main with .claude-plugin/plugin.json bumped, the matching `## [x.y.z]`
+# entry newest in CHANGELOG.md and the README `Status: **vx.y.z.**` line set —
+# the same commit (tests/test-release.sh enforces the trio) — then push a tag
+# `v<x.y.z>`. This workflow fails the tag build on any mismatch, re-runs the
+# full gate (the SAME tests/run-all.sh ci.yml runs, plus the node release-gate
+# suite), and publishes a GitHub release whose body is that version's CHANGELOG
+# section — release notes ARE the changelog, never a hand-written duplicate.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      # Pinned like ci.yml: a newer shellcheck adds or drops warnings, so an
+      # untouched tree goes red (or a real warning ships green) on an image
+      # update. run-all.sh finds this one on PATH and reports its version.
+      - name: Shellcheck (pinned 0.10.0)
+        run: |
+          docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
+            sh -c 'shellcheck --version | grep version:; shellcheck -S warning hooks/*.sh scripts/*.sh tests/*.sh'
+
+      - name: Gate — tag == plugin.json == newest CHANGELOG heading
+        run: node scripts/release-gate.mjs "$GITHUB_REF_NAME" --notes-out release-notes.md
+
+      # ONE gate, shared with ci.yml and local runs: JSON validity, bash -n,
+      # shellcheck (the pinned step above is the enforcing copy), and every
+      # tests/test-*.sh by GLOB. A tag build re-runs exactly what a PR build
+      # ran — no drift between the two.
+      - name: Gates (tests/run-all.sh — same command as CI and local)
+        run: bash tests/run-all.sh
+
+      # The gate script itself is exercised for real only on a tag push — the
+      # worst moment to first discover a regression — so its node suite runs
+      # here too (run-all.sh globs tests/test-*.sh and cannot see .mjs).
+      - name: release gate tests
+        run: node --test tests/test-release-gate.mjs
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag

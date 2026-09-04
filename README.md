@@ -221,7 +221,9 @@ cc-reload/
 ├── templates/session.md
 ├── tests/run-all.sh                  # THE local gate: JSON + bash -n + shellcheck + every tests/test-*.sh (what CI runs)
 ├── tests/{test-hooks, test-statusline, test-config, test-e2e, test-claim-digest, test-release}.sh
+├── tests/test-release-gate.mjs    # node suite for scripts/release-gate.mjs (run by release.yml)
 ├── .github/workflows/ci.yml       # pinned shellcheck 0.10.0 + `bash tests/run-all.sh`
+├── .github/workflows/release.yml  # tag build: release-gate trio check + run-all + auto release from CHANGELOG
 ├── CHANGELOG.md                   # release history (Keep a Changelog)
 ├── CLAUDE.md                      # maintainer handoff: architecture, invariants, change guide
 └── LICENSE                        # MIT
