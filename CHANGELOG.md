@@ -4,6 +4,25 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-04
+
+### Fixed
+- **A `[1m]`-suffixed or lens-prefixed proxied model stamped a 1M window the vendor does not serve.**
+  `proxy_window()` looked up the RAW stamped id in cc-proxy's `/v1/models`, which never carries
+  picker spellings (`glm-4.6[1m]`, `qwen:deepseek-v4-pro`) — the exact match missed, the caller
+  fell to `model_window()`, and its Claude-oriented `*[1m]* => 1M` rule fired FIRST. A genuinely
+  200K proxied id (`glm-4.6[1m]` on Z.ai) was budgeted at 5x the room the vendor serves, so the
+  notify/snapshot ladder armed only after the session had already overrun the real limit. Found
+  measuring cc-proxy's live `/v1/models` (betmoar/cc-proxy-plugin): cc-proxy strips both the
+  variant suffix and the `<provider>:` lens BEFORE the upstream body (Z.ai and the Qwen plan both
+  400 a suffixed id), so the vendor always serves the STEM's window — the lookup now resolves the
+  same stem (cut at the first `[`, then any `:` prefix). Claude ids are untouched by construction:
+  cc-proxy publishes no `context_window` for `claude-*`, the stem lookup misses there too, and the
+  F05 `[1m]` 1M-window guard is regression-locked by test. Verified end-to-end against the real
+  proxy: `glm-4.6[1m]` → 200000, `glm-5.3[1m]` → 1048576 (previously 1000000 for both via the
+  heuristic). Five new stub tests; both strips are mutation-verified (reverting either turns its
+  named test red).
+
 ## [0.3.3] - 2026-09-02
 
 Principal-architect audit (`docs/audit-2026-09-02-principal.md`): nine findings, seven fixed here

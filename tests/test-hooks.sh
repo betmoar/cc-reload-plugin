@@ -568,7 +568,9 @@ cat > "$STUBBIN/curl" <<'STUBEOF'
 #!/usr/bin/env bash
 case "${STUB_CURL_MODE:-}" in
   ok)
-    printf '%s' '{"data":[{"id":"stub-model","context_window":128000},{"id":"stub-null","context_window":null},{"id":"stub-zero","context_window":0},{"id":"stub-str","context_window":"abc"}]}'
+    # glm-4.6 200000 is the STEM-LOOKUP fixture (2026-09-04): a genuinely-200K
+    # proxied id whose "[1m]" picker spelling must resolve the stem's window.
+    printf '%s' '{"data":[{"id":"stub-model","context_window":128000},{"id":"stub-null","context_window":null},{"id":"stub-zero","context_window":0},{"id":"stub-str","context_window":"abc"},{"id":"glm-4.6","context_window":200000},{"id":"deepseek-v4-pro","context_window":1000000}]}'
     ;;
   down) exit 7 ;;   # curl's own "couldn't connect" exit code
   *) exit 1 ;;
@@ -643,6 +645,39 @@ echo "== proxy_window: F05 guard holds — [1m] Claude id still resolves 1M with
 rm -f "$TMP/.reload/model"
 ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "claude-opus-5[1m]" >/dev/null
 ck "claude-opus-5[1m] stamps 1000000 (cc-proxy omits window for claude-* ids)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+echo "== proxy_window: a [1m]/lens-suffixed PROXIED id resolves the STEM's curated window =="
+# The defect this locks (found 2026-09-04 measuring cc-proxy's /v1/models): the
+# lookup key was the raw stamped id, which never appears verbatim in /v1/models,
+# so it missed and model_window()'s Claude-oriented "*[1m]* => 1M" rule fired
+# FIRST — budgeting glm-4.6[1m] (a genuine 200K id on Z.ai) at 1M, 5x the room
+# the vendor serves. cc-proxy strips the suffix before the upstream body (both
+# Z.ai and the Qwen plan 400 a suffixed id), so the vendor serves the STEM's
+# window; the lookup must resolve the same stem. glm-4.6:200000 and
+# deepseek-v4-pro:1000000 ride the ONE shared stub above (run_proxy pins
+# PATH=$STUBBIN, so a second bin would be silently ignored).
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "glm-4.6[1m]" >/dev/null
+ck "glm-4.6[1m] stamps the STEM's 200000, not the [1m] heuristic's 1000000" 'grep -q "window: 200000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "lmstudio:glm-4.6[1m]" >/dev/null
+ck "lens+suffix form resolves the same stem (200000)" 'grep -q "window: 200000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "qwen:deepseek-v4-pro" >/dev/null
+ck "lens form resolves the stem's curated 1000000" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "glm-4.9[1m]" >/dev/null
+ck "suffixed id whose STEM is not curated -> table fallback still applies" 'grep -q "window: 1000000" "$TMP/.reload/model"'
+
+# Regression lock on the guard from the block above: with the stem lookup in
+# place, a claude-* stem still finds no window (cc-proxy publishes none), so
+# the F05 1M behavior must be byte-identical.
+rm -f "$TMP/.reload/model"
+ANTHROPIC_BASE_URL="http://127.0.0.1:9999" STUB_CURL_MODE=ok run_proxy "claude-opus-5[1m]" >/dev/null
+ck "claude-opus-5[1m] still 1000000 with the stem lookup active (F05 intact)" 'grep -q "window: 1000000" "$TMP/.reload/model"'
 
 
 # ── 2026-09-02 principal audit: F01/F02/F03 — the transcript scan ─────────────

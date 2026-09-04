@@ -265,8 +265,29 @@ proxy_window() {
   body="$(curl -fsS --max-time 1 --connect-timeout 1 "$base/v1/models" 2>/dev/null)" || return 1
   [ -n "$body" ] || return 1
 
+  # LOOK UP THE STRIPPED STEM, not the stamped id. Two cc-proxy spellings never
+  # appear verbatim in /v1/models, and both mean the same model at the vendor:
+  #   - a trailing "[1m]"-style VARIANT SUFFIX (Claude Code's picker spelling —
+  #     cc-proxy strips it before routing AND before the upstream body, because
+  #     Z.ai and the Qwen plan both 400 a suffixed id, so the VENDOR serves the
+  #     stem's window, never a beta-expanded one);
+  #   - a "<provider>:" LENS PREFIX (cc-proxy's local selector, e.g.
+  #     "qwen:deepseek-v4-pro" — likewise stripped before the wire).
+  # Without this, the exact-match lookup misses and the caller falls to
+  # model_window(), whose Claude-oriented "*[1m]* => 1M" rule fires FIRST —
+  # budgeting a genuinely-200K proxied id (glm-4.6[1m], glm-5.1[1m], a lens
+  # form) at 5x the room the vendor serves, so the notify/snapshot ladder
+  # fires only after the session has already overrun the real limit. Claude
+  # ids are untouched by construction: cc-proxy publishes no context_window
+  # for claude-*, so the stem lookup misses there too and the F05 [1m]
+  # 1M-window guard keeps working exactly as before.
+  local stem="$model"
+  stem="${stem%%\[*}"              # glm-4.6[1m] -> glm-4.6  (cut at the first "[")
+  stem="${stem#*:}"                # qwen:deepseek-v4-pro -> deepseek-v4-pro
+  [ -n "$stem" ] || return 1       # "[1m]" or "qwen:" alone: nothing to look up
+
   local win
-  win="$(printf '%s' "$body" | jq -r --arg id "$model" '
+  win="$(printf '%s' "$body" | jq -r --arg id "$stem" '
     ( .data // . // [] )
     | ( if type == "array" then . else [] end )
     | map(select(.id == $id))
