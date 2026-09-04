@@ -51,6 +51,23 @@ for t in tests/test-*.sh; do
   if [ "$rc" -eq 0 ]; then ok "$t — ${line:-exit 0}"; else bad "$t — ${line:-exit $rc}"; printf '%s\n' "$out" | grep -E '^  FAIL' | head -20; fi
 done
 
+# Release gate suite (node): the tag-build workflow runs it explicitly; the
+# glob above sees only tests/test-*.sh, so wire it in here by hand to keep
+# local runs identical to release.yml (node absent locally = LOUD skip, the
+# same shape as the lint warning above — never a silent pass).
+if command -v node >/dev/null 2>&1; then
+  echo "== release gate suite (node --test tests/test-release-gate.mjs) =="
+  if out="$(node --test tests/test-release-gate.mjs 2>&1)"; then
+    ok "tests/test-release-gate.mjs — $(printf '%s\n' "$out" | grep -E '^# (pass|fail)' | tr '\n' ' ')"
+  else
+    bad "tests/test-release-gate.mjs"
+    printf '%s\n' "$out" | grep -E '^not ok|FAIL' | head -20
+  fi
+else
+  printf 'WARN  node not found — release gate suite NOT run locally. The tag build runs it and WILL fail\n'
+  printf '      on anything it finds.\n'
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL GATES GREEN"; else echo "$fails GATE(S) RED"; fi
 exit "$fails"
