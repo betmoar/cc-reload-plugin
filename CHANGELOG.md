@@ -4,6 +4,21 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-04
+
+### Fixed
+- **`repete_active()` tolerated a quote per end, diverging from cc-repete's canonical reader
+  (issue #14).** cc-repete settled the quote rule in its #30 / PR #31 (v0.2.5): quotes on
+  `active:` strip as a both-ends pair or not at all, across all three of its readers. This
+  repo's v0.4.0 mirror still matched each end independently, so an asymmetric `active: true"`
+  read ACTIVE here while every cc-repete reader read it inactive — cc-reload would stand down
+  on a hand edit or torn write against a loop its own engine had exited. No writer emits the
+  asymmetric form, so the exposure was hand edits and torn writes only. The regex is now
+  `(true|"true")`; the well-formed forms (plain, `"true"`, trailing space, CR) are unchanged,
+  and a torn write's bare `active: true` still counts. Two new consumer-side cases, red-first
+  (both failed on the v0.4.0 reader) and mutation-verified (reverting the regex turns exactly
+  them red).
+
 ## [0.4.0] - 2026-09-04
 
 ### Fixed

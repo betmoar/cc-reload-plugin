@@ -159,6 +159,10 @@ printf -- '---\nactive: false\nphase: 9\n---\n# handoff note quotes the schema:\
 ck "body line active: true does NOT count (issue #12)" 'have_fn repete_active && ! libcall repete_active'
 printf -- '---\nactive: "true"\n---\n' > "$RP"
 ck "quoted true counts (producer strips one quote layer)" 'libcall repete_active'
+printf -- '---\nactive: true"\n---\n' > "$RP"
+ck "asymmetric trailing quote reads INACTIVE (cc-repete #30: both ends or neither)" 'have_fn repete_active && ! libcall repete_active'
+printf -- '---\nactive: "true\n---\n' > "$RP"
+ck "asymmetric leading quote reads INACTIVE (cc-repete #30)" 'have_fn repete_active && ! libcall repete_active'
 printf -- '---\nactive: true\r\n---\n' > "$RP"
 ck "CRLF form counts" 'libcall repete_active'
 printf -- 'active: true\n' > "$RP"

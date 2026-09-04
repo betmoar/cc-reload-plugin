@@ -192,15 +192,21 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     stood down forever, silently, against a loop that was over; and the producer's quoted form
     `active: "true"` read as NOT active — cc-reload kept running alongside a live loop, the exact
     collision the stand-down exists to prevent. `repete_active()` now mirrors cc-repete's own
-    reader: first `---` block only, one optional quote layer, one optional trailing CR. The
+    reader: first `---` block only, quotes as a both-ends pair or not at all (cc-repete #30 /
+    PR #31 settled that canonical across all three of its readers in its v0.2.5; issue #14
+    flipped this side's mirror to match — an asymmetric `true"` is likelier corruption than
+    formatting and reads INACTIVE), one optional trailing CR. The
     deliberate cross-repo shape decision: a TORN write (opener, no closer) reads as
-    frontmatter-to-EOF, matching the producer's `fm()` — a torn `active: true` stands cc-reload
-    down until cc-repete rewrites the file; coordinate any change to that with cc-repete (the
-    declared contract is the stricter first-block scope — never "fix" a divergence by loosening
-    this reader back toward a whole-file grep). If cc-repete renames the key, the file, or the
-    value form, these tests go red — that is the pin working: update together, not silently.
+    frontmatter-to-EOF, matching the producer's `fm()` — a torn bare `active: true` stands
+    cc-reload down until cc-repete rewrites the file; coordinate any change to that with
+    cc-repete (the declared contract is the stricter first-block scope — never "fix" a divergence
+    by loosening this reader back toward a whole-file grep). If cc-repete renames the key, the
+    file, or the value form, these tests go red — that is the pin working: update together, not
+    silently.
     (Tests: "plain active: true in block 1 -> active", "body line active: true does NOT count
-    (issue #12)", "quoted true counts (producer strips one quote layer)", "CRLF form counts",
+    (issue #12)", "quoted true counts (producer strips one quote layer)", "asymmetric trailing
+    quote reads INACTIVE (cc-repete #30: both ends or neither)", "asymmetric leading quote reads
+    INACTIVE (cc-repete #30)", "CRLF form counts",
     "no frontmatter at all -> not active", "torn write: active: true with no closer still counts",
     "torn write: active: false with no closer -> not active", "a SECOND block's active: true does
     not count")

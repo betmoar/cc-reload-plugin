@@ -50,13 +50,20 @@ ensure_reload_dir() {
 # (opener, no closer) reads as frontmatter-to-EOF exactly like the producer's
 # fm(): a torn `active: true` stands cc-reload down until cc-repete rewrites
 # the file — coordinated on both sides, not a divergence.
+#
+# Quote rule (issue #14, tracking cc-repete #30 / PR #31): quotes strip as a
+# BOTH-ENDS PAIR or not at all — cc-repete settled this as canonical across all
+# three of its readers in v0.2.5. An asymmetric form (`active: true"`) is
+# likelier corruption than formatting and reads INACTIVE here: a hand edit or
+# torn write must not resurrect a loop its own engine exited. The bare
+# `active: true` in a torn write still counts, as above.
 repete_active() {
   local f="$PROJECT_DIR/.repete/loop.local.md"
   [ -f "$f" ] || return 1
   [ -n "$(awk '
     BEGIN{f=0}
     /^---[[:space:]]*$/ {f++; next}
-    f==1 && /^active:[[:space:]]*"?true"?[[:space:]]*\r?$/ {print "y"; exit}
+    f==1 && /^active:[[:space:]]*(true|"true")[[:space:]]*\r?$/ {print "y"; exit}
     f>=2 {exit}
   ' "$f" 2>/dev/null)" ]
 }
