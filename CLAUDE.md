@@ -56,7 +56,8 @@ PreToolUse hook (model Write/Edit)
 ```
 
 Every hook first: **exit 0 if jq is missing** (fail open — sourced `exit` in `lib.sh` exits the
-caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` → `active: true`).
+caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` frontmatter
+`active: true`, first `---` block only — a published contract, cc-repete#27; see invariant 17).
 
 ## Load-bearing invariants (each has a named test; the suite is cited per entry)
 
@@ -182,6 +183,27 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
     (statusline must not source lib.sh's jq-exit; reload-config must not either), and the README
     block itself is fed to the Stop hook. (Tests: "reader PARITY", "the FIFTH strip", "commented
     context_window pin is honoured -> 75% nudges", "README still carries the three-line example")
+17. **`.repete/loop.local.md` is a published contract, and `repete_active()` reads it the way the
+    producer does.** (issue #12.) The path, the `active` key and the value `true` are an interface
+    cc-repete declares (its CLAUDE.md "what a loop publishes", betmoar/cc-repete-plugin#27); the
+    payload below the frontmatter is loop prose and must never count. Until 0.4.0 this was a bare
+    whole-file grep, wrong in BOTH directions: body prose quoting `active: true` (a handoff note
+    after teardown flipped the frontmatter to `active: false`) read as a LIVE loop — every hook
+    stood down forever, silently, against a loop that was over; and the producer's quoted form
+    `active: "true"` read as NOT active — cc-reload kept running alongside a live loop, the exact
+    collision the stand-down exists to prevent. `repete_active()` now mirrors cc-repete's own
+    reader: first `---` block only, one optional quote layer, one optional trailing CR. The
+    deliberate cross-repo shape decision: a TORN write (opener, no closer) reads as
+    frontmatter-to-EOF, matching the producer's `fm()` — a torn `active: true` stands cc-reload
+    down until cc-repete rewrites the file; coordinate any change to that with cc-repete (the
+    declared contract is the stricter first-block scope — never "fix" a divergence by loosening
+    this reader back toward a whole-file grep). If cc-repete renames the key, the file, or the
+    value form, these tests go red — that is the pin working: update together, not silently.
+    (Tests: "plain active: true in block 1 -> active", "body line active: true does NOT count
+    (issue #12)", "quoted true counts (producer strips one quote layer)", "CRLF form counts",
+    "no frontmatter at all -> not active", "torn write: active: true with no closer still counts",
+    "torn write: active: false with no closer -> not active", "a SECOND block's active: true does
+    not count")
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -257,6 +279,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` �
 | `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1, both test files' alias cases |
 | Anything in `hooks/hooks.json` | plugin must not ALSO declare hooks in plugin.json (duplicate-hooks load error — v0.1.2 regression) |
 | `claim-digest.sh` decision logic | `tests/test-claim-digest.sh`, e2e cycle 7, README "Known limitations" |
+| `repete_active()` (`hooks/lib.sh`) — a cross-REPO contract | cc-repete is the producer and its reader is canonical (its CLAUDE.md "what a loop publishes", betmoar/cc-repete-plugin#27): first `---` block, `active` key, one quote layer + CR tolerance, torn write = frontmatter-to-EOF. This repo's eight consumer-side cases in `tests/test-claim-digest.sh` go red if either side moves — update the two repos together, never "fix" a divergence by loosening this reader back to a whole-file grep (invariant 17). Also: README hook preamble, SKILL.md coexistence note, both command files' stand-down step |
 | `pretooluse-hook.sh` or its `hooks.json` entry | plugin must not ALSO declare hooks in `plugin.json`; `tests/test-claim-digest.sh` |
 | `PENDING` being a stamped file rather than a `touch` | `stop-hook.sh:69`, `precompact-hook.sh:24`, `sessionstart-hook.sh` arm-owner block, both test files (these two citations are checked by `tests/test-release.sh`: the cited line must contain `PENDING`) |
 | `context_owner_window` semantics (default 14400, 0=off) | `lib.sh` `owner_window()`, `scripts/reload-config.sh`, `commands/reload-budget.md`, README, `tests/test-config.sh` |

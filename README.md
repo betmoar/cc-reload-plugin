@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.3.3.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.4.0.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -102,7 +102,8 @@ not disclosed or configurable as a %, which is exactly why cc-reload drives the 
 | `PreToolUse`   | `Write`\|`Edit`              | Before the model overwrites `.reload/session.md`, side-files a *different* session's recent digest and warns. Never blocks the write. |
 
 Every hook's first actions: **fail open if `jq` is missing**, and **stand down if a cc-repete loop
-is active** (`.repete/loop.local.md` → `active: true`). See `hooks/lib.sh`.
+is active** (`.repete/loop.local.md` frontmatter `active: true`, scoped to the first `---` block
+exactly as cc-repete itself reads it — a published contract, cc-repete#27). See `hooks/lib.sh`.
 
 In `snapshot` mode the Stop hook additionally guards its own two-pass handshake: it never blocks
 when `stop_hook_active` is set without the `summarizing` marker (a broken handshake must not

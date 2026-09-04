@@ -33,9 +33,32 @@ ensure_reload_dir() {
 }
 
 # True when a cc-repete loop is active in this project -> cc-reload stands down.
+#
+# .repete/loop.local.md is a PUBLISHED CONTRACT (betmoar/cc-repete-plugin#27,
+# declared in cc-repete's CLAUDE.md "what a loop publishes"): the path, the
+# `active` key, the value `true` — in the FIRST frontmatter block, with the
+# producer's tolerances (one optional layer of surrounding quotes, one optional
+# trailing CR). This mirrors cc-repete's own reader (the no-jq awk in its
+# hooks/stop-hook.sh; its fm() reads the same shape), because two readers of
+# one file must not disagree about when a loop is over. The bare whole-file
+# grep this replaces (issue #12) was wrong in BOTH directions: BODY prose
+# quoting "active: true" (a handoff note, a lesson card — the payload below the
+# frontmatter is loop prose) read as a LIVE loop after teardown, so cc-reload
+# stood down forever against a loop that was over; and `active: "true"` (quoted,
+# a form the producer accepts) read as NOT active, so cc-reload ran alongside a
+# live loop — the exact collision the stand-down exists to prevent. A torn write
+# (opener, no closer) reads as frontmatter-to-EOF exactly like the producer's
+# fm(): a torn `active: true` stands cc-reload down until cc-repete rewrites
+# the file — coordinated on both sides, not a divergence.
 repete_active() {
   local f="$PROJECT_DIR/.repete/loop.local.md"
-  [ -f "$f" ] && grep -qE '^active:[[:space:]]*true[[:space:]]*$' "$f"
+  [ -f "$f" ] || return 1
+  [ -n "$(awk '
+    BEGIN{f=0}
+    /^---[[:space:]]*$/ {f++; next}
+    f==1 && /^active:[[:space:]]*"?true"?[[:space:]]*\r?$/ {print "y"; exit}
+    f>=2 {exit}
+  ' "$f" 2>/dev/null)" ]
 }
 
 # Read a "key: value" line from a file (absent -> empty). Strips a trailing
@@ -265,8 +288,29 @@ proxy_window() {
   body="$(curl -fsS --max-time 1 --connect-timeout 1 "$base/v1/models" 2>/dev/null)" || return 1
   [ -n "$body" ] || return 1
 
+  # LOOK UP THE STRIPPED STEM, not the stamped id. Two cc-proxy spellings never
+  # appear verbatim in /v1/models, and both mean the same model at the vendor:
+  #   - a trailing "[1m]"-style VARIANT SUFFIX (Claude Code's picker spelling —
+  #     cc-proxy strips it before routing AND before the upstream body, because
+  #     Z.ai and the Qwen plan both 400 a suffixed id, so the VENDOR serves the
+  #     stem's window, never a beta-expanded one);
+  #   - a "<provider>:" LENS PREFIX (cc-proxy's local selector, e.g.
+  #     "qwen:deepseek-v4-pro" — likewise stripped before the wire).
+  # Without this, the exact-match lookup misses and the caller falls to
+  # model_window(), whose Claude-oriented "*[1m]* => 1M" rule fires FIRST —
+  # budgeting a genuinely-200K proxied id (glm-4.6[1m], glm-5.1[1m], a lens
+  # form) at 5x the room the vendor serves, so the notify/snapshot ladder
+  # fires only after the session has already overrun the real limit. Claude
+  # ids are untouched by construction: cc-proxy publishes no context_window
+  # for claude-*, so the stem lookup misses there too and the F05 [1m]
+  # 1M-window guard keeps working exactly as before.
+  local stem="$model"
+  stem="${stem%%\[*}"              # glm-4.6[1m] -> glm-4.6  (cut at the first "[")
+  stem="${stem#*:}"                # qwen:deepseek-v4-pro -> deepseek-v4-pro
+  [ -n "$stem" ] || return 1       # "[1m]" or "qwen:" alone: nothing to look up
+
   local win
-  win="$(printf '%s' "$body" | jq -r --arg id "$model" '
+  win="$(printf '%s' "$body" | jq -r --arg id "$stem" '
     ( .data // . // [] )
     | ( if type == "array" then . else [] end )
     | map(select(.id == $id))

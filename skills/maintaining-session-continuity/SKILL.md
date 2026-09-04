@@ -64,5 +64,6 @@ a reset — lead with it in mind.
 
 ## Coexistence with cc-repete
 
-`.repete/loop.local.md` with `active: true` means a loop owns this session: cc-reload's hooks stand
-down and its commands defer to `/repete-continue`. The two never run continuity at once.
+`.repete/loop.local.md` frontmatter `active: true` (first `---` block, as cc-repete reads it)
+means a loop owns this session: cc-reload's hooks stand down and its commands defer to
+`/repete-continue`. The two never run continuity at once.
