@@ -4,6 +4,103 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-09-09
+
+The digest — the payload the whole plugin exists to carry — had never been improved on its own
+merits since v0.1.0. All 460 checks pinned the *transport* (markers, handshake, occupancy scan,
+config readers); none pinned the payload. This release pins the format, closes the two ways a
+digest silently lost information, gives it repo facts read from `git` instead of recalled, and
+lets it report its own staleness. 460 → 558 checks.
+
+### Added
+- **Digest section PARITY test** (`tests/test-hooks.sh`, invariant 18) — `templates/session.md` is
+  now the declared source of truth for the four section headings, and the three copies that repeat
+  them by hand (the pass-1 REINJECT heredoc in `stop-hook.sh`, the mechanical stub in
+  `precompact-hook.sh`, the `_first_bullet`/`_first_line` reader in `sessionstart-hook.sh`) are
+  pinned to it in both directions: every template heading must appear in the two writers, and every
+  heading the banner READS must be one the template defines. Nothing checked this before — a rename
+  on either side degraded silently, dropping a line from the banner forever or making it read a
+  section no digest would ever have. Same defect class invariant 16 closed for the config readers,
+  left open on the payload. Red-verified with four separate mutations.
+- **`mission` frontmatter field** — the original ask, written once and copied verbatim on every
+  later snapshot, while `intent` tracks where the work stands now. Rewriting the ask on every
+  snapshot made it a summary of a summary of a summary; after three resets the north star no longer
+  said what was asked for. Free at the parser layer (`digest_field` reads frontmatter generically,
+  `claim_digest` already preserves unknown keys) — now pinned by a test that it survives the
+  rehydrate claim byte-identical.
+- **`scripts/context-block.sh`** — the plugin's only `git` caller: branch, short HEAD, uncommitted
+  paths (capped, with a count), `diff --shortstat`, recent commit subjects. Prints **nothing** and
+  exits 0 outside a repo, with no `git` on PATH, in an empty repo (no HEAD to resolve), or on a
+  broken `.git` — the same fail-open-silent shape as `proxy_window()`. Half a block, or one with
+  git's stderr in it, would land in a digest that gets injected into a fresh context as fact.
+- **PreCompact's mechanical fallback is now usable.** The worst path in the plugin —
+  auto-compaction firing before any agent-authored digest existed — produced three literal
+  `(unknown)` lines. It still cannot author prose (no model runs inside a hook), but it now states
+  where the repo stood and stamps `head:`, so the one digest that exists *because* nobody wrote one
+  is not also the one with no staleness signal.
+- **Measured staleness in the rehydrate banner**, two independent axes, both advisory (they never
+  gate, never block — invariant 11):
+  - `head_drift()` — the digest stamps the short HEAD it was written at; SessionStart counts the
+    commits since. A *measured* signal, unlike the mtime `-nt` heuristic.
+  - `digest_age_days()` — how long ago the digest was written, from filesystem mtime (never the
+    model-written `updated_at`, which is routinely copied forward). This axis has nothing to do
+    with occupancy: a session that never crosses the budget is never asked to refresh. Measured in
+    this repo: its digest was stamped 2026-07-10 describing v0.1.9 while the repo was on v0.4.1 —
+    two months stale, and nothing ever said so.
+- **`/snapshot --check`** — an audit path that tests the digest's *content*. Every other gate tests
+  the transport: that the digest arrives. Whether it is any **good** cannot be judged from inside
+  the session that wrote it, because the author knows what it omits. `--check` dispatches one
+  subagent given the digest **alone** — no conversation summary, nothing recalled — and asks what
+  it would do next, which files it would open, and what the original ask was. Divergence is the
+  defect, surfaced while it can still be fixed. Writes nothing, arms nothing, applies nothing
+  silently. The command *contract* is pinned (13 checks), not the verdict: a live subagent is not
+  deterministic, so there is no CI fixture suite.
+- **`tests/test-context-block.sh`** — 69 checks over real repos built per case (clean, dirty,
+  detached HEAD, empty, broken `.git`, non-repo, empty PATH).
+
+### Fixed
+- **Every snapshot was a blind overwrite** (invariant 19). `commands/snapshot.md` said "overwrite"
+  and never "read the existing digest first", and neither did the REINJECT the model actually sees.
+  An Open question raised in one session and untouched in the next died at that next snapshot —
+  silently, with nothing left to recover from. All four guidance surfaces (template comment,
+  REINJECT, `commands/snapshot.md`, `SKILL.md`) now say: read first, carry unresolved items forward
+  verbatim, strike only what is demonstrably resolved. Deliberately instruction rather than
+  mechanism — a hook cannot author a digest, and splicing an untrusted model-written body section
+  is exactly the corruption `frontmatter_closed` exists to prevent. New e2e cycle 10 pins that the
+  instruction is *delivered* at both authoring moments; three of its eight cases were red before.
+- **The pass-1 REINJECT gave weaker guidance than the template's own HTML comment.** The text the
+  model is actually handed listed four heading names and nothing else, while the template — which
+  it may never open — carried the real instructions. The REINJECT now states the quality bar
+  directly: *In flight* names files with line numbers, *Next concrete step* is an executable action
+  (a command or an edit with a path) and never "continue with X", and the test baseline goes under
+  *Open questions & risks* when there is one.
+- **The staleness signals refuse to guess.** A confident wrong number is worse than silence: an
+  authoritative "0 commits behind" over a badly stale digest is believed by a session that just
+  lost its context. Two gates, each found unpinned by mutation testing and each then measured:
+  without the anchored hex gate, a `head:` of `HEAD~2` — untrusted digest text — resolves and
+  counts as 2; without `^{commit}`, a hex-valid **blob** sha yields `rev-list --count` = 3 with
+  exit 0. (An unknown sha already fails `rev-list` outright with exit 128, which is why pinning
+  that second gate needs a blob and not a made-up sha.)
+- **The mtime trap, both halves** (invariant 20). `claim_digest` rewrites the digest through a temp
+  file + `mv`, and the `mv` stamps a brand-new mtime — measured: a file backdated to 2020 reads as
+  `now` immediately after. So the age must be captured *before* the claim (or the signal dies
+  within a session), **and** the claim must restore the original mtime afterwards (or it decays
+  across sessions: every rehydrate rejuvenates the file, so a digest claimed on each `/clear` reads
+  as fresh forever however stale its content). The second half was invisible to the suite and found
+  by running the real hook against this repo's own digest — content from 2026-07-10, mtime from
+  that morning, because a SessionStart had claimed it. The single case the signal exists for is the
+  one it would have missed. Restored with `touch -r` from a reference file, never `date -r` (an
+  epoch on BSD, a FILE on GNU — silently wrong on one of the two platforms this runs on).
+
+### Changed
+- `CLAUDE.md` — invariants 18, 19 and 20; an expanded digest-format coupling row naming all four
+  guidance surfaces; coupling rows for the git-touching functions and for `/snapshot --check`; and
+  decision notes on why the guidance is duplicated across four files (each reaches the model at a
+  different moment and none can read the others) and why `mission` is a frontmatter field rather
+  than a fifth section (the ~30-line budget is zero-sum, and a section would add a fifth copy to
+  everything invariant 18 pins). The same reasoning rejected a standing `## Baseline` section in
+  favour of an instruction line.
+
 ## [0.4.1] - 2026-09-04
 
 ### Added

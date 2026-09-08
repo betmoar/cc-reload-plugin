@@ -210,6 +210,77 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     "no frontmatter at all -> not active", "torn write: active: true with no closer still counts",
     "torn write: active: false with no closer -> not active", "a SECOND block's active: true does
     not count")
+18. **`templates/session.md` is the digest's source of truth, and the three hand-kept copies of
+    its heading list are pinned to it.** (0.4.2.) The four section names are written out
+    independently in four places: the template, the pass-1 REINJECT heredoc (`stop-hook.sh`), the
+    mechanical stub (`precompact-hook.sh`), and the banner reader
+    (`sessionstart-hook.sh`'s `_first_bullet`/`_first_line` arguments). Until 0.4.2 NOTHING checked
+    they agreed — the same defect class invariant 16 closed for the config readers, left open on
+    the payload the whole plugin exists to carry. Drift is silent in BOTH directions: a heading
+    renamed in the template while the reader keeps the old name drops that line from the banner
+    forever, and a heading renamed in the reader while the template keeps the old one makes the
+    banner read a section no digest will ever have. The parity block extracts `^## ` from the
+    template and requires each name in the two writers, then requires every name the READER looks
+    up to be one the template defines. The `mission` field is the same rule one level down: it is
+    the original ask, written once and copied verbatim, so `claim_digest`'s frontmatter rewrite
+    must leave it byte-identical — an `intent` that gets rewritten every snapshot is a summary of a
+    summary, which is the erosion `mission` exists to stop.
+    (Tests: "the template defines the four sections", "REINJECT heredoc names the template
+    section", "PreCompact stub names the template section", "banner reads a section the template
+    defines", "mission survives the claim byte-identical", "the rehydrated context carries the
+    mission"; e2e cycle 10.)
+19. **Every snapshot REPLACES the last one, so carry-forward is instruction, not mechanism.**
+    (0.4.2.) `commands/snapshot.md` said "overwrite" and never "read the existing digest first":
+    an Open question raised in session A and untouched in session B died at B's snapshot, silently,
+    with nothing to recover from. The fix cannot be a hook — a hook cannot author a digest, and
+    splicing an untrusted model-written body section is exactly the corruption `frontmatter_closed`
+    exists to prevent. So the instruction ships in all four guidance surfaces (template comment,
+    REINJECT, snapshot.md, SKILL.md) and what is PINNED is delivery: the REINJECT must carry the
+    read-first, carry-forward and verbatim-mission rules, and the rehydrate must carry an
+    unresolved item and the mission across. Do NOT "strengthen" this into a mechanical splice, and
+    do NOT write a test asserting a fixture carried an item forward — such a test passes on the
+    pre-fix code, which is worse than no test (it certifies the bug as fixed).
+    (Tests: "the REINJECT tells the model to read the existing digest first", "the REINJECT names
+    carrying unresolved items forward", "the REINJECT keeps the mission verbatim, never rewritten",
+    "the rehydrate carries the unresolved Open question across"; e2e cycle 10.)
+20. **git is a SOFT dependency with exactly one caller, and every derived signal is silent unless
+    it is MEASURED.** (0.4.2.) `scripts/context-block.sh` is the only place in the plugin that runs
+    `git`; everything else is bash + jq + coreutils. It prints NOTHING and exits 0 on no git, not a
+    work tree, an empty repo (no HEAD to resolve), or a broken `.git` — the `proxy_window()` shape.
+    Half a block, or one with git's stderr in it, lands in a digest that is injected into a fresh
+    context as fact.
+    The staleness signals follow the same rule, and the failure they guard is a CONFIDENT WRONG
+    NUMBER, which is strictly worse than today's silence: an authoritative "0 commits behind" over
+    a badly stale digest is believed by a session that just lost its context. `head_drift()` emits
+    only on a positive match of two real commits, and its two gates are each load-bearing and were
+    each measured (2026-09-09): without the anchored hex gate a stamp of `HEAD~2` — untrusted
+    digest text — resolves and counts as 2; without `^{commit}` a hex-valid BLOB sha yields
+    `rev-list --count` = 3 with exit 0. An unknown sha, by contrast, already fails `rev-list`
+    outright (exit 128), so a made-up sha does NOT exercise that second gate — pin it with a blob.
+    `digest_age_days()` reads FILESYSTEM MTIME, never the frontmatter `updated_at` (model-written,
+    and routinely copied forward from the previous digest).
+    **The mtime trap, in two halves — both had to be fixed, and the second was found only by
+    running the hook against this repo's own digest.** `claim_digest`'s temp-file + `mv` stamps a
+    brand-new mtime (measured: a file backdated to 2020 reads as `now` immediately after).
+    (a) The age must be captured in `sessionstart-hook.sh` BEFORE the claim, or the signal is dead
+    *within* a session. (b) `claim_digest` must RESTORE the mtime afterwards (`touch -r` from a
+    reference file taken before the rewrite), or the signal decays *across* sessions: every
+    rehydrate rejuvenates the file, so a digest claimed on each `/clear` reads as fresh forever
+    however stale its content is. Measured 2026-09-09 on this repo: content from 2026-07-10
+    describing v0.1.9 with the repo on v0.4.1 — two months stale — and an mtime from that same
+    morning, because a SessionStart had claimed it. The one case the signal exists for is the one
+    it would have missed; a unit suite cannot catch this, only running the real hook against a real
+    aged digest. Both halves are the v0.1.5 id-equality shape: a check that is false exactly when
+    it matters. **mtime means "when the content was last written" — a claim rewrites the OWNER, not
+    the thread.** Use `touch -r`, never `date -r`: the latter takes an epoch on BSD and a FILE on
+    GNU, i.e. it is silently wrong on one of the two platforms this must run on.
+    Every signal is advisory: it never gates, never blocks, and the rehydrate has already happened
+    when the banner is assembled (invariant 11, and the "pointer, not source of truth" contract).
+    (Tests: "prints nothing outside a repo", "prints nothing with no git on PATH", "empty repo
+    never leaks git's fatal", "detached HEAD is named as such, not as a branch", "a revision
+    EXPRESSION is not a sha", "a blob sha resolves but is not a commit", "stamp == live HEAD: no
+    drift line", "age is measured BEFORE the claim rewrites the file", "the claim PRESERVES mtime",
+    "a SECOND rehydrate still reports the true age", "the fallback names the branch and sha".)
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -270,21 +341,41 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
   invocation; without `notified` the nudge would fire on every Stop over budget. The ladder is
   cleared when occupancy drops under budget and on any real reset (SessionStart hygiene), so a new
   climb always announces itself.
+- **Why is the digest's quality guidance duplicated across four files instead of centralised
+  (0.4.2)?** Each surface reaches the model at a different moment and none can read the others: the
+  REINJECT is a JSON string the Stop hook emits (no file access), `commands/snapshot.md` is a
+  command body, the template comment is only seen if the model opens the template, and SKILL.md is
+  loaded by the skill system. A hook cannot inline the template into the REINJECT without reading a
+  file the plugin may not be able to reach at that moment, and a partial read would ship truncated
+  instructions. The copies are deliberate; the heading names are pinned to the template by the
+  parity test (invariant 18) and the guidance wording is a coupling row. **Rejected:** generating
+  the REINJECT from the template at hook time (a file read on the block path, failing open to
+  *no instructions at all* — worse than a copy); dropping the template's HTML comment in favour of
+  the REINJECT (the template is what a human opens to learn the format).
+- **Why is `mission` frontmatter and not a fifth section (0.4.2)?** `digest_field` reads
+  frontmatter generically and `claim_digest` preserves unknown keys, so a field costs zero parser
+  work and one line of the ~30-line budget. A section would add a fifth hand-kept copy of the
+  heading list to every place invariant 18 pins, for prose that is one line by definition.
+  Same reasoning rejected a `## Baseline` section: the baseline is an instruction line under
+  *Open questions & risks*, present only when there is one, rather than three lines of the budget
+  spent in every session including those that ran no tests.
 
 ## Couplings — if you touch X, also update Y
 
 | You changed | You must also check |
 |---|---|
-| Digest format / section names | `templates/session.md`, the pass-1 REINJECT heredoc in `stop-hook.sh`, `_first_bullet` calls in `sessionstart-hook.sh`, `commands/snapshot.md`, the skill |
+| Digest format / section names | `templates/session.md` is the SOURCE OF TRUTH; three copies repeat the heading list by hand — the pass-1 REINJECT heredoc in `stop-hook.sh`, the mechanical stub in `precompact-hook.sh`, and the `_first_bullet`/`_first_line` calls in `sessionstart-hook.sh` — plus `commands/snapshot.md` and the skill. The four are pinned to each other by `tests/test-hooks.sh` "digest section PARITY" (invariant 18); rename a heading in the template and those cases go red. Guidance text (not just heading names) lives in FOUR places and must stay consistent: the template's HTML comment, the REINJECT, `commands/snapshot.md` step 3-4, and SKILL.md "The digest" |
 | Marker file names/locations (`lib.sh` constants) | both test files, README "Layout" + hook table |
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
 | cc-proxy model windows (GLM/DeepSeek/Qwen ids) | curated against `cc-proxy-plugin/scripts/list-models.js` (`CONTEXT_WINDOW` const) as of 2026-08-04 — re-check that source before adding/editing a proxy case; only add a case when the real window differs from the 1M default (invariant 5). Since 0.3.1 this table is the FALLBACK — cc-proxy v0.5.1+'s `GET /v1/models` `context_window` field (positive integer tokens; curated ids include it, uncurated ids OMIT it — never `null`) is consulted first by `proxy_window()`. If cc-proxy's response shape or the omit-not-null contract changes, `proxy_window()`'s jq extraction in `hooks/lib.sh` must change too |
 | `proxy_window()` (`hooks/lib.sh`) | `hooks/sessionstart-hook.sh` (sole caller), `tests/test-hooks.sh` (stub-`curl`-on-PATH seam), README "How occupancy is measured", SKILL.md windows note, CLAUDE.md decision note above |
+| `scripts/context-block.sh`, `head_drift()` or `digest_age_days()` (`hooks/lib.sh`) — the ONLY git in the plugin | `tests/test-context-block.sh` (it builds REAL repos: clean, dirty, detached, empty, broken `.git`, non-repo, no-git-on-PATH), `hooks/precompact-hook.sh` (folds the block into the fallback and stamps `head:`), `hooks/sessionstart-hook.sh` (banner — and the age capture must stay ABOVE `claim_digest`, invariant 20), the `head:` line in `templates/session.md` + `commands/snapshot.md` + the REINJECT, README "How it works", SKILL.md. Keep every signal fail-open-SILENT: a wrong number is worse than none |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
 | `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1, both test files' alias cases |
 | Anything in `hooks/hooks.json` | plugin must not ALSO declare hooks in plugin.json (duplicate-hooks load error — v0.1.2 regression) |
 | `claim-digest.sh` decision logic | `tests/test-claim-digest.sh`, e2e cycle 7, README "Known limitations" |
+| `/snapshot --check` (`commands/snapshot.md`) | `tests/test-context-block.sh` "== /snapshot --check ==" block, README "Commands". It is an AUDIT: never writes, never arms, and the subagent gets the digest ALONE — leak this session's context into that prompt and it passes by cheating, which makes the whole path theatre. Always pass an explicit subagent model. No CI fixture suite: a live subagent is not deterministic, so what is pinned is the command CONTRACT, not the audit's verdict |
 | `repete_active()` (`hooks/lib.sh`) — a cross-REPO contract | cc-repete is the producer and its reader is canonical (its CLAUDE.md "what a loop publishes", betmoar/cc-repete-plugin#27): first `---` block, `active` key, one quote layer + CR tolerance, torn write = frontmatter-to-EOF. This repo's eight consumer-side cases in `tests/test-claim-digest.sh` go red if either side moves — update the two repos together, never "fix" a divergence by loosening this reader back to a whole-file grep (invariant 17). Also: README hook preamble, SKILL.md coexistence note, both command files' stand-down step |
 | `pretooluse-hook.sh` or its `hooks.json` entry | plugin must not ALSO declare hooks in `plugin.json`; `tests/test-claim-digest.sh` |
 | `PENDING` being a stamped file rather than a `touch` | `stop-hook.sh:69`, `precompact-hook.sh:24`, `sessionstart-hook.sh` arm-owner block, both test files (these two citations are checked by `tests/test-release.sh`: the cited line must contain `PENDING`) |

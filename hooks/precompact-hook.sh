@@ -38,11 +38,33 @@ if [ ! -f "$DIGEST" ]; then
   # Mechanical fallback — no agent-authored digest exists yet. Leave an honest
   # stub so the next session knows the snapshot is thin and should re-derive
   # state from disk/git rather than trust this.
+  #
+  # The prose stays "(unknown)" because it genuinely is: a hook is a shell
+  # command, the model is not running in it, and no amount of git can say what
+  # the session was thinking. What git CAN say is where the repo stood, and
+  # since 0.4.2 that goes under "Done this stretch" — turning the worst path in
+  # the plugin from three useless lines into a real starting point. Empty (no
+  # git, not a repo, empty repo, broken .git) is the normal case, not an error:
+  # context-block.sh fails open and silent, and the stub reads exactly as it did
+  # before. Never let it interpolate unquoted into a printf FORMAT string — the
+  # commit subjects it carries are arbitrary text and a stray `%s` would eat the
+  # next argument.
+  CTX="$(bash "$(dirname "$0")/../scripts/context-block.sh" 2>/dev/null)"
+  # Stamp head: as well, so the ONE path that exists BECAUSE no digest was
+  # written is not also the one path with no staleness signal when it is finally
+  # rehydrated. Validated as a sha here rather than trusted: this is the same
+  # value head_drift() will feed to git, and an empty or garbled stamp must
+  # simply not be written (an absent key is silent by design).
+  HEADSHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null)"
+  [[ "$HEADSHA" =~ ^[0-9a-fA-F]{7,40}$ ]] || HEADSHA=""
   {
-    printf -- '---\nsession_id: "%s"\nupdated_at: "%s"\nintent: "(mechanical fallback — no agent-authored digest)"\n---\n' \
+    printf -- '---\nsession_id: "%s"\nmission: "(unknown — no agent-authored digest was written before compaction)"\nupdated_at: "%s"\n' \
       "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '## Done this stretch\n(unknown — auto-compaction fired before a digest was written)\n\n'
-    printf '## In flight\n(unknown)\n\n'
+    [ -n "$HEADSHA" ] && printf 'head: "%s"\n' "$HEADSHA"
+    printf -- 'intent: "(mechanical fallback — no agent-authored digest)"\n---\n'
+    printf '## Done this stretch\n(unknown — auto-compaction fired before a digest was written)\n'
+    [ -n "$CTX" ] && printf '%s\n' "$CTX"
+    printf '\n## In flight\n(unknown)\n\n'
     printf '## Next concrete step\nRe-derive state from the repo and recent git history, then run /snapshot to start tracking again.\n\n'
     printf '## Open questions & risks\nThis digest is a fallback; trust files and commits over it.\n'
   } > "$DIGEST"

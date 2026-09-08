@@ -273,19 +273,35 @@ if [ "$MODE" = "snapshot" ] && [ ! -e "$PENDING" ]; then
   # 3/3; audit 2026-09-02 F05). Invariant 2: never block without the marker.
   ensure_reload_dir
   { touch "$SUMMARIZING" 2>/dev/null && [ -f "$SUMMARIZING" ]; } || exit 0
+  # The heading list below is one of FOUR hand-kept copies (template, this
+  # heredoc, precompact-hook.sh's stub, sessionstart-hook.sh's reader). They are
+  # pinned to templates/session.md by test-hooks.sh "digest section PARITY" —
+  # rename one here and that case goes red. Keep the guidance at least as
+  # specific as the template's own HTML comment: this text is what the model
+  # actually sees, and until 0.4.2 it was the WEAKER of the two.
   REINJECT='--- cc-reload context snapshot: write a session digest, then STOP ---
 Context is ~'"$OCCUPANCY"'% of the window (budget '"$PCT"'%). Reset before rot sets in. Capture the working thread so the next session resumes losslessly.
 
-Write .reload/session.md (overwrite it), tight — under ~30 lines — with frontmatter and four sections:
+If .reload/session.md already exists, read it first: this REPLACES it, so anything you do not carry over is lost. Carry every still-unresolved Open question forward verbatim, and strike only what is demonstrably resolved. Copy `mission` across verbatim — it is the original ask and is never rewritten.
+
+Write .reload/session.md, tight — under ~30 lines — with frontmatter and four sections:
   ---
   session_id: "<run: echo "$CLAUDE_CODE_SESSION_ID" — paste that value; if empty, use an empty string>"
+  mission: "<the original ask, verbatim from the existing digest; if none, one line stating what this session was asked to do>"
   updated_at: "<ISO8601>"
-  intent: "<one line: what this session is doing>"
+  head: "<run: git rev-parse --short HEAD — paste it, never recall it; omit this line if there is no repo>"
+  intent: "<one line: where the work stands NOW>"
   ---
   ## Done this stretch
   ## In flight
   ## Next concrete step
   ## Open questions & risks
+
+Quality bar — a vague digest is why a reset hurts:
+  * In flight: name the file paths (with line numbers) you are mid-edit in.
+  * Next concrete step: an action someone can execute — a command, or an edit with a path. Never "continue with X".
+  * Open questions & risks: record the test baseline (pass/fail counts before your change) when there is one.
+  * Done this stretch: run `bash "$CLAUDE_PLUGIN_ROOT/scripts/context-block.sh"` and fold its output in — branch, HEAD, uncommitted paths and recent commits, read from git instead of recalled. It prints nothing outside a repo.
 
 Write durable artifacts to their normal homes too (commits, notes). Then STOP. Do NOT continue the work.'
   jq -n --arg r "$REINJECT" --arg m "🧹 cc-reload · context ~${OCCUPANCY}% — saving session digest before /clear" \

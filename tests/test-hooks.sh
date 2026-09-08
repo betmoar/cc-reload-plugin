@@ -841,4 +841,41 @@ OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
 ck "a body intent: line never reaches the banner" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"BODY-INTENT\")" >/dev/null'
 rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
 
+echo "== digest section PARITY: the FOUR hand-kept copies of the heading list agree =="
+# templates/session.md is the source of truth. The same heading list is written
+# out by hand in three other places, and until now NOTHING checked they agree:
+#   * the pass-1 REINJECT heredoc (stop-hook.sh) — what the model is TOLD to write
+#   * PreCompact's mechanical stub (precompact-hook.sh) — what a hook WRITES
+#   * sessionstart-hook.sh's _first_bullet/_first_line calls — what the banner READS
+# A rename in one copy degrades silently: the banner drops a line, or the model
+# writes sections the reader never finds. Same defect class as invariant 16's
+# config readers, which got a parity test; the digest never did.
+TPL="$(dirname "$H")/templates/session.md"
+HEADINGS="$(grep -E '^## ' "$TPL" | sed 's/^## //')"
+ck "the template defines the four sections (else every case below is vacuous)" '[ "$(printf "%s\n" "$HEADINGS" | grep -c .)" -eq 4 ]'
+while IFS= read -r hd; do
+  [ -n "$hd" ] || continue
+  ck "REINJECT heredoc names the template section: $hd" 'grep -qF "## $hd" "$H/stop-hook.sh"'
+  ck "PreCompact stub names the template section: $hd" 'grep -qF "## $hd" "$H/precompact-hook.sh"'
+done < <(printf '%s\n' "$HEADINGS")
+# The reader direction: every section sessionstart-hook.sh looks up by name must
+# be one the template actually defines, or the banner silently reads nothing.
+while IFS= read -r rd; do
+  [ -n "$rd" ] || continue
+  ck "banner reads a section the template defines: $rd" 'printf "%s\n" "$HEADINGS" | grep -qxF "$rd"'
+done < <(grep -oE "_first_(bullet|line) '[^']+'" "$H/sessionstart-hook.sh" | sed "s/.*'\\(.*\\)'/\\1/" | sort -u)
+
+echo "== digest frontmatter: mission is immutable across a rehydrate claim =="
+# `mission` is the original ask, written once and copied verbatim; `intent` is
+# the moving "where am I now". claim_digest rewrites session_id at rehydrate —
+# it must leave every other frontmatter key byte-identical, or the north star
+# erodes exactly like intent does.
+printf -- '---\nsession_id: "S1"\nmission: "the ORIGINAL ask, verbatim"\nintent: "where I am now"\n---\n## Next concrete step\nstep X\n' > "$TMP/.reload/session.md"
+touch "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"S2","source":"clear"}')"
+ck "claim_digest rewrote session_id to the rehydrating session" 'grep -q "session_id: \"S2\"" "$TMP/.reload/session.md"'
+ck "mission survives the claim byte-identical" 'grep -qF "mission: \"the ORIGINAL ask, verbatim\"" "$TMP/.reload/session.md"'
+ck "the rehydrated context carries the mission" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"the ORIGINAL ask, verbatim\")" >/dev/null'
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

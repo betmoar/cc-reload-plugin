@@ -59,8 +59,38 @@ summarize-and-continue.)
 ## The digest
 
 Four sections, ~30 lines: **Done this stretch / In flight / Next concrete step / Open questions &
-risks**, plus a one-line `intent`. The next concrete step is the single most valuable line across
-a reset — lead with it in mind.
+risks**, plus frontmatter `mission` and a one-line `intent`. The next concrete step is the single
+most valuable line across a reset — lead with it in mind.
+
+**Every snapshot replaces the last one, and nothing warns you what fell out.** Read the existing
+digest before writing a new one and carry unresolved Open questions forward verbatim; strike only
+what is demonstrably resolved. An item raised two resets ago that nobody has touched since is
+exactly the one that vanishes.
+
+**`mission` is written once and copied verbatim; `intent` moves.** Rewriting the original ask on
+every snapshot makes it a summary of a summary — after three resets it no longer says what was
+asked for. Keep `intent` for "where the work stands now".
+
+**Make it executable.** *In flight* names files with line numbers; *Next concrete step* is a
+command or an edit with a path, never "continue with X". Record the test baseline (pass/fail
+before the change) under *Open questions* when there is one — a reset destroys that number and
+nothing else recovers it.
+
+**Don't write from memory what a shell knows.** `scripts/context-block.sh` prints branch, HEAD,
+uncommitted paths and recent commits; fold its output under *Done this stretch* instead of
+recalling shas. Stamp `head:` in the frontmatter by *running* `git rev-parse --short HEAD` — after
+a reset cc-reload counts the commits since and says so in the banner. A remembered sha is worse
+than none: it produces a confident, wrong staleness number. Outside a repo, omit it — every git
+signal here is optional and silent when unavailable.
+
+**The banner will tell you when the digest is old** (N commits since, or N days old). Both are
+advisory — they never block a rehydrate. Treat either as a reason to re-read files and git log
+before acting on the digest.
+
+**`/snapshot --check` before a reset you cannot afford to get wrong.** It hands the digest — and
+nothing else — to a fresh subagent and asks what it would do next. If that answer diverges from
+what you know, the digest is defective, and you find out while you can still fix it. This is the
+only way to test the digest's *content*; everything else tests that it arrives.
 
 ## Coexistence with cc-repete
 
