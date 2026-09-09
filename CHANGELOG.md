@@ -10,7 +10,7 @@ The digest — the payload the whole plugin exists to carry — had never been i
 merits since v0.1.0. All 460 checks pinned the *transport* (markers, handshake, occupancy scan,
 config readers); none pinned the payload. This release pins the format, closes the two ways a
 digest silently lost information, gives it repo facts read from `git` instead of recalled, and
-lets it report its own staleness. 460 → 605 checks.
+lets it report its own staleness. 460 → 607 checks.
 
 ### Added
 - **Digest section PARITY test** (`tests/test-hooks.sh`, invariant 18) — `templates/session.md` is
@@ -54,9 +54,9 @@ lets it report its own staleness. 460 → 605 checks.
   subagent given the digest **alone** — no conversation summary, nothing recalled — and asks what
   it would do next, which files it would open, and what the original ask was. Divergence is the
   defect, surfaced while it can still be fixed. Writes nothing, arms nothing, applies nothing
-  silently. The command *contract* is pinned (14 checks), not the verdict: a live subagent is not
+  silently. The command *contract* is pinned (16 checks), not the verdict: a live subagent is not
   deterministic, so there is no CI fixture suite.
-- **`tests/test-context-block.sh`** — 87 checks over real repos built per case (clean, dirty,
+- **`tests/test-context-block.sh`** — 89 checks over real repos built per case (clean, dirty,
   detached HEAD, empty, broken `.git`, non-repo, empty PATH).
 
 ### Fixed
