@@ -177,7 +177,13 @@ claim_digest() {
   # frontmatter_closed above).
   frontmatter_closed || return 0
 
-  local tmp="$DIGEST.claim.$$"
+  local tmp="$DIGEST.claim.$$" ref="$DIGEST.mtime.$$"
+  # Snapshot the mtime BEFORE the rewrite, as a reference FILE rather than a
+  # number: `touch -r SRC DST` is POSIX and behaves identically on BSD and GNU,
+  # whereas the epoch route needs `date -r` — which takes an epoch on BSD and a
+  # FILE on GNU, i.e. silently wrong on one of the two platforms this must run
+  # on. See the restore below for why the mtime has to survive at all.
+  touch -r "$DIGEST" "$ref" 2>/dev/null || ref=""
   if awk -v id="$new_id" '
     NR==1 { print; if ($0 != "---") { body=1 }; next }  # no opening fence -> never in frontmatter
     body { print; next }                                # past the closing fence: verbatim, never rescanned
@@ -189,10 +195,109 @@ claim_digest() {
     }
     { print }
   ' "$DIGEST" > "$tmp" 2>/dev/null && mv "$tmp" "$DIGEST" 2>/dev/null; then
+    # Restore the ORIGINAL mtime. The mv above gives the digest a brand-new one,
+    # and mtime is what digest_age_days() reads to answer "how old is this
+    # working thread" — so without this, every rehydrate rejuvenates the file
+    # and a digest that is claimed on each /clear reads as fresh forever no
+    # matter how stale its CONTENT is. Measured on this repo's own digest
+    # (2026-09-09): content from 2026-07-10 describing v0.1.9, repo on v0.4.1,
+    # but an mtime from that morning because a SessionStart had claimed it. The
+    # one case the signal exists for is the one it would have missed.
+    #
+    # A claim rewrites the OWNER, not the thread; mtime must keep meaning "when
+    # the content was last written".
+    #
+    # Best-effort, like everything else here: a failed touch just leaves the new
+    # mtime (the pre-0.4.2 behaviour), never an error and never a lost digest.
+    [ -n "$ref" ] && touch -r "$ref" "$DIGEST" 2>/dev/null
+    rm -f "$ref" 2>/dev/null
     return 0
   fi
+  rm -f "$ref" 2>/dev/null
   rm -f "$tmp" 2>/dev/null   # never leave a truncated partial behind
   return 0
+}
+
+# How many commits have landed since the digest stamped its `head:`. Prints a
+# positive integer, or NOTHING when the answer is not measurable. Called once,
+# from SessionStart's banner — never from the Stop hook's per-turn path.
+#
+# This is the MEASURED staleness signal the mtime `-nt` heuristic could never
+# be: "3 commits since this digest" is a fact, "the file is older than the
+# marker" is a guess about a filesystem's clock granularity.
+#
+# The whole design is one rule: a CONFIDENT WRONG number is worse than silence.
+# A stamp the model invented, a sha from another clone, a shallow clone that
+# cannot walk back that far, a digest written before 0.4.2 with no stamp at
+# all — every one of those would otherwise render an authoritative "0 commits
+# behind" over a digest that is badly stale, and the banner is read as fact by
+# a session that has just lost its context. So each step below either produces
+# a real number or produces nothing:
+#   * no git / not a work tree / no stamp        -> silent
+#   * stamp is not a plausible sha (hex, 7-40)   -> silent, and never reaches a
+#     shell command: digest content is model-written and untrusted (invariant
+#     8), so it is pattern-checked BEFORE git ever sees it
+#   * git cannot resolve it to a commit here     -> silent (foreign/invented sha)
+#   * rev-list cannot count                      -> silent (shallow clone)
+#   * count is 0                                 -> silent (nothing to say)
+head_drift() {
+  local stamp="$1"
+  [ -n "$stamp" ] || return 0
+  # Untrusted input gate. Anchored, so no shell metacharacter, no `--flag`, and
+  # no path can ever reach git as an argument.
+  [[ "$stamp" =~ ^[0-9a-fA-F]{7,40}$ ]] || return 0
+  command -v git >/dev/null 2>&1 || return 0
+  [ "$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ] || return 0
+  # Does this repo actually know that commit? `^{commit}` rejects a sha that
+  # resolves to a tree/blob, and an unknown sha fails outright.
+  git -C "$PROJECT_DIR" rev-parse -q --verify "${stamp}^{commit}" >/dev/null 2>&1 || return 0
+  # ANCESTRY, not merely resolvability — the last and least obvious gate.
+  # `rev-list --count A..HEAD` answers happily when A and HEAD have DIVERGED,
+  # and the number it returns then means "commits on HEAD that are absent from
+  # A", which is not "commits landed since this digest": the digest's own work
+  # is not in that history at all. `.reload/` is per-PROJECT and shared across
+  # branches by design (known landmines), so the trigger is ordinary — snapshot
+  # on a feature branch, switch to main, rehydrate — and every other gate here
+  # passes it (measured: a feature tip against a main 2 commits ahead reports
+  # "2 commits since this digest"). Well-formed and wrong is the one output
+  # shape this function exists to refuse.
+  git -C "$PROJECT_DIR" merge-base --is-ancestor "$stamp" HEAD 2>/dev/null || return 0
+  local n
+  n="$(git -C "$PROJECT_DIR" rev-list --count "${stamp}..HEAD" 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] || return 0
+  [ "$n" -gt 0 ] || return 0
+  printf '%s' "$n"
+}
+
+# Whole days since the digest was last written, or NOTHING below the threshold.
+# The second staleness axis, and the one that needs no git at all.
+#
+# Occupancy is the only trigger the plugin has: a session that never crosses the
+# budget is never asked to refresh, so its digest can age indefinitely with no
+# signal. Measured in this repo on 2026-09-09 — the digest was stamped
+# 2026-07-10 and described shipping v0.1.9 while the repo was on v0.4.1.
+#
+# MTIME, not the frontmatter `updated_at`: the latter is model-written and can
+# be stale, invented, or copied forward from the previous digest, which is
+# exactly the class of confident-wrong signal head_drift() also refuses. Same
+# portable stat idiom as claim-digest.sh (BSD `-f %m` vs GNU `-c %Y`; see the
+# comment there for why `-f` cannot be probed first). Silent on anything
+# unreadable — never a guessed age.
+digest_age_days() {
+  local threshold="${1:-1}" mtime now days
+  [ -f "$DIGEST" ] || return 0
+  mtime="$(stat -c %Y "$DIGEST" 2>/dev/null || stat -f %m "$DIGEST" 2>/dev/null)"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 0
+  now="$(date +%s 2>/dev/null)"
+  [[ "$now" =~ ^[0-9]+$ ]] || return 0
+  # No separate clock-skew guard: a future mtime makes `days` NEGATIVE, which
+  # fails the threshold test below and is already silent (measured — a mtime
+  # ~1157 days ahead yields days=-1157). An explicit `[ "$now" -ge "$mtime" ]`
+  # here was dead code: deleting it left every test green because it could not
+  # change any outcome. The threshold comparison is the guard.
+  days=$(( (now - mtime) / 86400 ))
+  [ "$days" -ge "$threshold" ] || return 0
+  printf '%s' "$days"
 }
 
 # Freshness window in seconds. A non-negative integer in config wins; anything

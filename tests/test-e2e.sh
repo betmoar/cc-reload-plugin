@@ -324,4 +324,51 @@ ck "9.10 digest re-claimed by LONE-C" 'grep -q "^session_id: \"LONE-C\"" "$TMP/.
 # Zero side-files anywhere in this cycle — the whole point.
 ck "9.11 zero side-files across the entire cycle" '[ -z "$(ls "$TMP"/.reload/session.LONE-*.md 2>/dev/null)" ]'
 
+# ── CYCLE 10: carry-forward — an unresolved Open question must not die in the overwrite ──
+echo "== E2E cycle 10: the carry-forward instruction reaches the model at BOTH authoring moments =="
+# Snapshot N+1 overwrites snapshot N. Until 0.4.2 nothing anywhere said "read the
+# existing digest first", so an Open question raised in session A and not touched
+# in session B vanished at B's snapshot — silently, with no trace to recover from.
+#
+# The fix is INSTRUCTION, not mechanism: a hook cannot author a digest, and
+# splicing an untrusted model-written body section is the corruption
+# frontmatter_closed exists to prevent. So what is testable — and what this cycle
+# pins — is that the instruction is DELIVERED at each runtime moment a digest gets
+# authored. Asserting that a fixture "carried an item forward" would only test the
+# fixture: it would pass on the pre-fix code, which is worse than no test at all.
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+printf 'context_budget_pct: 45\ncontext_budget_mode: snapshot\ncontext_window: 200000\n' > "$TMP/.reload/config"
+cat > "$TMP/.reload/session.md" <<'EOF'
+---
+session_id: "CF-A"
+updated_at: "2026-09-08T10:00:00Z"
+mission: "MAGIC-10-MISSION the original ask, never rewritten"
+intent: "carry-forward leg 1"
+---
+## Done this stretch
+- MAGIC-10-DONE
+## In flight
+- nothing
+## Next concrete step
+MAGIC-10-NEXT
+## Open questions & risks
+- MAGIC-10-OPENQ still unresolved after two resets
+EOF
+mktx 150000                      # 75% of the 200k pin -> over budget
+OUT="$(run stop-hook.sh "{\"session_id\":\"CF-A\",\"transcript_path\":\"$TMP/t.jsonl\"}")"
+ck "10.1 pass 1 blocks for the digest turn" 'printf "%s" "$OUT" | jq -e ".decision==\"block\"" >/dev/null'
+ck "10.2 the REINJECT tells the model to read the existing digest first" 'printf "%s" "$OUT" | jq -e ".reason|test(\"read it first\")" >/dev/null'
+ck "10.3 the REINJECT names carrying unresolved items forward" 'printf "%s" "$OUT" | jq -e ".reason|test(\"carry\";\"i\")" >/dev/null'
+ck "10.4 the REINJECT keeps the mission verbatim, never rewritten" 'printf "%s" "$OUT" | jq -e ".reason|test(\"verbatim\")" >/dev/null'
+# The other authoring moment: after a reset the model resumes from the injected
+# context, and the next /snapshot happens THERE. The unresolved item and the
+# mission must both be in what it is handed.
+rm -f "$TMP/.reload/summarizing" "$TMP/.reload/notified"
+printf 'CF-A' > "$TMP/.reload/pending"
+OUT="$(run sessionstart-hook.sh '{"session_id":"CF-B","source":"clear"}')"
+ck "10.5 the rehydrate carries the unresolved Open question across" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-10-OPENQ\")" >/dev/null'
+ck "10.6 the rehydrate carries the immutable mission across" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-10-MISSION\")" >/dev/null'
+ck "10.7 the mission survived the rehydrate claim byte-identical" 'grep -qF "MAGIC-10-MISSION the original ask, never rewritten" "$TMP/.reload/session.md"'
+ck "10.8 only session_id was rewritten by the claim" 'grep -q "^session_id: \"CF-B\"" "$TMP/.reload/session.md" && grep -q "^intent: \"carry-forward leg 1\"" "$TMP/.reload/session.md"'
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

@@ -10,7 +10,7 @@ cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary se
 complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
 the two never fight.
 
-> Status: **v0.4.1.** The design target is **proactive reset before auto-compaction**:
+> Status: **v0.4.2.** The design target is **proactive reset before auto-compaction**:
 > keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
 > never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
 
@@ -36,13 +36,25 @@ claude plugin install cc-reload@cc-reload-plugin
      over-budget turns get the laddered reminder instead. (The pre-0.2.0 value `checkpoint` is
      still accepted as an alias.)
    Tune per task with `/reload-budget <pct>`; switch modes with `/reload-budget notify|snapshot`.
-2. **Snapshot** — `.reload/session.md` holds the working thread (intent / done / in flight / next
-   step / open questions). The budget prompts one; `/snapshot` writes one on demand; the skill
-   keeps it fresh as you work.
+2. **Snapshot** — `.reload/session.md` holds the working thread (mission / intent / done / in
+   flight / next step / open questions). The budget prompts one; `/snapshot` writes one on demand;
+   the skill keeps it fresh as you work. Each snapshot **replaces** the last, so the digest is
+   written read-first: unresolved open questions are carried forward verbatim, and `mission` — the
+   original ask — is copied across unchanged while `intent` tracks where the work stands now.
 3. **Arm** — a `.reload/pending` marker means "rehydrate on the next reset." Only *armed* resets
    rehydrate, so a deliberate `/clear` meant to drop context is respected.
 4. **Rehydrate** — the `SessionStart` hook injects the digest after `/clear` or `/compact` and
-   consumes the marker. Automatic — no command. `/reload` does it manually.
+   consumes the marker. Automatic — no command. `/reload` does it manually. The banner also
+   reports how stale the digest is: *N commits since this digest* (from the `head:` sha it stamped)
+   and *N days old* (from the file's mtime). Both are advisory — they never block a rehydrate, and
+   both stay silent unless the number is genuinely measurable.
+
+`git` is a **soft dependency** with three call sites: `scripts/context-block.sh` (branch, HEAD,
+uncommitted paths, recent commits — folded into the digest so the model states repo facts instead
+of recalling them), the commit-drift count above, and the `head:` stamp PreCompact writes. Outside
+a repo, without `git`, in an empty repo or on a broken `.git`, every one of those prints nothing
+and the plugin behaves exactly as it did before. The *N days old* signal is mtime-only, so it keeps
+working with no repo at all.
 
 ### How occupancy is measured (and its limits)
 
@@ -90,6 +102,7 @@ not disclosed or configurable as a %, which is exactly why cc-reload drives the 
 | ---------------- | ------------------------------------------------------------------------ |
 | `/reload-budget` | Set the proactive trigger threshold (% of window) for this project; tune per task |
 | `/snapshot`      | Write `.reload/session.md` now and arm a reload across the next reset     |
+| `/snapshot --check` | Audit the current digest: a fresh subagent reads it *alone* and says what it would do next — divergence from what you know is the digest's defect. Writes nothing |
 | `/reload`        | Manually rehydrate from `.reload/session.md` (5-line sitrep, then resume) |
 
 ## Hooks
@@ -215,12 +228,13 @@ cc-reload/
 ├── scripts/statusline.sh             # statusline segment renderer (native or via composer)
 ├── scripts/reload-config.sh          # validated get/set for .reload/config (used by /reload-budget)
 ├── scripts/claim-digest.sh           # concurrent-session guard: side-files a foreign+fresh incumbent digest
+├── scripts/context-block.sh          # the free-form git caller: branch/HEAD/dirty/recent commits, silent without git
 ├── commands/{reload-budget.md, snapshot.md, reload.md}
 ├── skills/maintaining-session-continuity/SKILL.md
 │   └── evals/trigger-eval.json       # triggering benchmark for the skill description
 ├── templates/session.md
 ├── tests/run-all.sh                  # THE local gate: JSON + bash -n + shellcheck + every tests/test-*.sh (what CI runs)
-├── tests/{test-hooks, test-statusline, test-config, test-e2e, test-claim-digest, test-release}.sh
+├── tests/{test-hooks, test-statusline, test-config, test-e2e, test-claim-digest, test-context-block, test-release}.sh
 ├── tests/test-release-gate.mjs    # node suite for scripts/release-gate.mjs (run by release.yml)
 ├── .github/workflows/ci.yml       # pinned shellcheck 0.10.0 + `bash tests/run-all.sh`
 ├── .github/workflows/release.yml  # tag build: release-gate trio check + run-all + auto release from CHANGELOG

@@ -78,6 +78,14 @@ INCOHERENT_ARM=""
 
 rm -f "$PENDING"   # consume the arm
 
+# Digest age must be read HERE, before claim_digest below. That claim rewrites
+# the file through a temp file + mv, and the mv gives the digest a brand-new
+# mtime (measured: a file backdated to 2020 reads as `now` immediately after) —
+# so every digest looks 0 days old once claimed, and the age signal would be
+# dead on its own primary path. Same trap in a different costume as the v0.1.5
+# id-equality bug: a check that is structurally false exactly when it matters.
+DIGEST_AGE_DAYS="$(digest_age_days 1)"
+
 # This session now carries the working thread it just rehydrated: claim the
 # digest by rewriting its frontmatter session_id to our own id. The next
 # /snapshot then sees INCUMBENT==WRITER and stays silent — this is what makes
@@ -137,6 +145,21 @@ fi
 if [ -n "$NEXT_LINE" ]; then
   MSG="$MSG | → $(_truncate "$NEXT_LINE" 60)"
 fi
+# Measured staleness (0.4.2). The digest stamps the HEAD it was written at;
+# head_drift() counts the commits since, and prints NOTHING unless it has a real
+# number (no git, no stamp, foreign sha, shallow clone, zero drift — all silent;
+# see lib.sh). Advisory only: it never gates, never blocks, and the rehydrate
+# above has already happened. This is a fact the digest itself cannot know,
+# which is the whole reason it is worth a line — the digest says what the
+# session was doing, this says how much has moved under it since.
+DRIFT="$(head_drift "$(digest_field head)")"
+[ -n "$DRIFT" ] && MSG="$MSG | ⏱ $DRIFT commits since this digest — re-read before trusting it"
+# The second staleness axis, and the one that works with no git: how long ago
+# the digest was written. Occupancy is the plugin's only refresh trigger, so a
+# session that never crosses the budget can carry a weeks-old digest with no
+# signal whatsoever. Captured BEFORE claim_digest (see DIGEST_AGE_DAYS above) —
+# reading it here would measure the claim's own mv, not the digest.
+[ -n "$DIGEST_AGE_DAYS" ] && MSG="$MSG | 🕰 digest is $DIGEST_AGE_DAYS days old"
 MSG="$MSG | /reload for full sitrep"
 
 jq -n --arg ctx "$BODY" --arg src "$SOURCE" --arg msg "$MSG" '{
