@@ -395,6 +395,16 @@ ck "--check demands the subagent get the digest ONLY (no leaked context)" 'print
 ck "--check names context leakage as the thing that invalidates it" 'printf "%s" "$CHECK" | grep -qiE "leak|cheating"'
 ck "--check forbids passing a summary of this conversation" 'printf "%s" "$CHECK" | grep -qiE "no summary of this conversation|nothing you remember"'
 ck "--check reports divergence, not agreement" 'printf "%s" "$CHECK" | grep -qi "divergence"'
+# No digest means there is nothing to audit, and the audit path must END there.
+# The first cut said "if it is missing, say so and suggest /snapshot. Then:" —
+# the "Then:" ran straight into the dispatch step, so the reading that survives
+# a skim is "dispatch a subagent with an empty prompt". Either it audits nothing
+# at cost, or it invents a digest to audit. Say STOP where the branch is.
+# Flattened: the sentence wraps, and grep is line-based.
+ck "--check STOPS when there is no digest (never dispatches on nothing)" \
+   'printf "%s" "$CHECK" | tr "\n" " " | grep -qE "missing[^.]*STOP|STOP[^.]*missing"'
+ck "--check dispatches nothing when there is no digest" \
+   'printf "%s" "$CHECK" | tr "\n" " " | grep -qiE "dispatch(es)? nothing|do not dispatch"'
 ck "--check does not apply its own recommendations silently" 'printf "%s" "$CHECK" | grep -qi "silently"'
 # And the ordinary path must still be intact below it — a command file that
 # audits but no longer snapshots would pass every case above.

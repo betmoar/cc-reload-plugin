@@ -15,7 +15,13 @@
 #     existed) and until 0.4.2 it produced three literal "(unknown)" lines. A
 #     hook cannot author prose, but it CAN state where the repo stood.
 #
-# git is a SOFT dependency and this script is its only caller in the plugin.
+# git is a SOFT dependency with exactly THREE call sites (invariant 20): this
+# script, head_drift() in hooks/lib.sh, and precompact-hook.sh's head: stamp.
+# This is the only one whose whole purpose is git and the only FREE-FORM caller;
+# the other two make one narrowly-scoped call each. digest_age_days() reads
+# mtime and is deliberately not one of them, so the age axis keeps working in a
+# directory with no repo at all. Adding a fourth means auditing all four against
+# invariant 20, not just this script.
 # Everything else is bash + jq + coreutils. The contract, in one line: on any
 # doubt, print NOTHING and exit 0 — same fail-open-silent shape as
 # proxy_window() in hooks/lib.sh. Half a block, or one with git's stderr pasted

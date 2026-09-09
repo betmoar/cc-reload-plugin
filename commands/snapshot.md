@@ -21,8 +21,10 @@ Every gate in this plugin tests the *transport* — that the digest reaches the 
 can test whether it is any **good**, because that needs a reader with no memory of this session.
 `--check` is that reader, run while there is still time to fix what it finds.
 
-Do NOT write, arm, or modify anything on this path. Read `.reload/session.md`; if it is missing,
-say so and suggest `/snapshot`. Then:
+Do NOT write, arm, or modify anything on this path. Read `.reload/session.md`. If it is missing,
+STOP: say there is no digest to audit, suggest `/snapshot`, and dispatch nothing — an audit with
+no artifact either costs a subagent to read nothing or invents the digest it was meant to check.
+With a digest in hand:
 
 1. Dispatch ONE subagent (model `sonnet`) whose prompt contains **only** the digest's literal text
    and the project directory — no summary of this conversation, no hints, nothing you remember.
