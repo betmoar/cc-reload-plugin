@@ -300,6 +300,19 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     GNU, i.e. it is silently wrong on one of the two platforms this must run on.
     Every signal is advisory: it never gates, never blocks, and the rehydrate has already happened
     when the banner is assembled (invariant 11, and the "pointer, not source of truth" contract).
+    **The digest's mtime now has TWO readers, and they are coupled.** `digest_age_days()` and
+    `claim-digest.sh`'s `owner_window()` freshness check read the same number, so preserving mtime
+    across a claim changed both. Before 0.4.2 the claim's `mv` restamped it, silently renewing the
+    collision window on every rehydrate — it measured "time since last CLAIM". It now measures what
+    `context_owner_window` is documented to measure: how recently another session WROTE the digest.
+    Measured consequence: a digest whose content is older than the window but was rehydrated a
+    moment ago is no longer side-filed on collision, where pre-0.4.2 it was. **Accepted, not a
+    regression to undo** — what goes unprotected there is content nobody has touched in over a
+    window, held in the rehydrating session's context, and its next `/snapshot` restores full
+    protection; the case that matters, a session that WROTE recently, is unchanged. Rejected:
+    widening `OWNER_WINDOW_DEFAULT` (tuning a constant to restore an accident) and a separate
+    "last claimed" marker (drags a best-effort guard into invariant 15's writer/reader/purge
+    discipline). Pinned in `tests/test-claim-digest.sh` so the coupling cannot move silently again.
     (Tests: "prints nothing outside a repo", "prints nothing with no git on PATH", "empty repo
     never leaks git's fatal", "detached HEAD is named as such, not as a branch", "a revision
     EXPRESSION is not a sha", "a blob sha resolves but is not a commit", "stamp == live HEAD: no
@@ -307,7 +320,9 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     "a SECOND rehydrate still reports the true age", "the fallback names the branch and sha",
     "a stamp that is not an ancestor of HEAD reports no drift", "a true ancestor still reports its
     drift", "a bare repo yields no drift line", "a failed git status never claims the tree is
-    clean", "a future mtime never reports a negative age", "exactly 1 day old still reports".)
+    clean", "a future mtime never reports a negative age", "exactly 1 day old still reports",
+    "a rehydrate does NOT renew the collision window", "a JUST-WRITTEN foreign digest is still
+    protected".)
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -406,7 +421,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
 | `repete_active()` (`hooks/lib.sh`) — a cross-REPO contract | cc-repete is the producer and its reader is canonical (its CLAUDE.md "what a loop publishes", betmoar/cc-repete-plugin#27): first `---` block, `active` key, one quote layer + CR tolerance, torn write = frontmatter-to-EOF. This repo's eight consumer-side cases in `tests/test-claim-digest.sh` go red if either side moves — update the two repos together, never "fix" a divergence by loosening this reader back to a whole-file grep (invariant 17). Also: README hook preamble, SKILL.md coexistence note, both command files' stand-down step |
 | `pretooluse-hook.sh` or its `hooks.json` entry | plugin must not ALSO declare hooks in `plugin.json`; `tests/test-claim-digest.sh` |
 | `PENDING` being a stamped file rather than a `touch` | `stop-hook.sh:69`, `precompact-hook.sh:24`, `sessionstart-hook.sh` arm-owner block, both test files (these two citations are checked by `tests/test-release.sh`: the cited line must contain `PENDING`) |
-| `context_owner_window` semantics (default 14400, 0=off) | `lib.sh` `owner_window()`, `scripts/reload-config.sh`, `commands/reload-budget.md`, README, `tests/test-config.sh` |
+| `context_owner_window` semantics (default 14400, 0=off) | `lib.sh` `owner_window()`, `scripts/reload-config.sh`, `commands/reload-budget.md`, README, `tests/test-config.sh`. It shares ONE signal — the digest's mtime — with `digest_age_days()`, so a change to what writes or preserves that mtime moves BOTH: see invariant 20's last paragraph before touching `claim_digest` |
 | The transcript scan (`TURN_SCAN_JQ`, `WINDOW_LINES` in `stop-hook.sh`) | ONE program, TWO reads (window, then full-file fallback) — keep it one definition. The main-thread filter, the per-line mode and the window are each pinned separately (invariant 14's tests); the `jq` shim test breaks if jq is ever handed the transcript PATH on the window path or a slurp flag anywhere. Re-measure by hand on a ≥50MB transcript after touching it (numbers in invariant 14) — never add a wall-clock assertion |
 | Any config-file reader (`lib.sh` `kv()`, `reload-config.sh get`, the three inline greps in `statusline.sh`) | the other FOUR copies — same strip order: comment, trailing whitespace, one layer of quotes. `tests/test-config.sh` "reader PARITY" runs one fixture set through the three that read `.reload/config`; the `.reload/model` grep reads a different file and is pinned by "the FIFTH strip" instead. README "Configuration" states comments are allowed (the example block is a test fixture: `tests/test-hooks.sh` reads the three `context_*` lines under README "Configuration" literally — matched by CONTENT, not line number — so reformatting them breaks the "README still carries the three-line example" case on purpose) |
 | A marker write (`touch`/`printf >` to `summarizing`, `pending`) | verify `-f` right after (invariant 15); if you add a marker, its reader tests `-f` and its writer must too, or you have added a fail-closed door. Pass 1's arm gate is `-e` on purpose — do not "tidy" it back to `-f` |

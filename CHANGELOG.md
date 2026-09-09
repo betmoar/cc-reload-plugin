@@ -10,7 +10,7 @@ The digest — the payload the whole plugin exists to carry — had never been i
 merits since v0.1.0. All 460 checks pinned the *transport* (markers, handshake, occupancy scan,
 config readers); none pinned the payload. This release pins the format, closes the two ways a
 digest silently lost information, gives it repo facts read from `git` instead of recalled, and
-lets it report its own staleness. 460 → 598 checks.
+lets it report its own staleness. 460 → 605 checks.
 
 ### Added
 - **Digest section PARITY test** (`tests/test-hooks.sh`, invariant 18) — `templates/session.md` is
@@ -113,6 +113,19 @@ lets it report its own staleness. 460 → 598 checks.
   epoch on BSD, a FILE on GNU — silently wrong on one of the two platforms this runs on).
 
 ### Changed
+- **`context_owner_window` now measures what it documents.** The collision guard
+  (`scripts/claim-digest.sh`) and the new age signal read the SAME number — the digest's mtime — so
+  preserving it across a claim moved both. Before 0.4.2 the claim's `mv` restamped it, silently
+  renewing the 4h window on every rehydrate: it measured "time since last *claim*". It now measures
+  how recently another session *wrote* the digest, which is what the key has always been documented
+  to mean. Measured consequence: a digest whose content is older than the window but was rehydrated
+  moments ago is no longer side-filed on collision, where before it was. Accepted rather than
+  reverted — what goes unprotected there is content nobody has touched in over a window, held in
+  the rehydrating session's own context, and its next `/snapshot` restores full protection; the
+  case that matters, a session that *wrote* recently, is unchanged. Rejected: widening the default
+  (tuning a constant to restore an accident) and a separate "last claimed" marker (drags a
+  best-effort guard into the marker discipline of invariant 15). Pinned so the coupling cannot move
+  silently again. Found in review.
 - `CLAUDE.md` — invariants 18, 19 and 20; an expanded digest-format coupling row naming all four
   guidance surfaces; coupling rows for the git-touching functions and for `/snapshot --check`; and
   decision notes on why the guidance is duplicated across four files (each reaches the model at a

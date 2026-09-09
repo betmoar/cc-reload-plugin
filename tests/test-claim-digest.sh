@@ -346,4 +346,50 @@ else
   echo "  SKIP: no usable real stat, or cannot chmod +x the fixture — behavioral half not run"
 fi
 
+echo "== owner_window measures time since the digest was WRITTEN, not since it was claimed =="
+# A cross-feature interaction, found in review of PR #16 and PINNED HERE rather
+# than fixed, because the new behaviour is the documented one.
+#
+# `claim_digest()` (SessionStart) used to rewrite the digest with a temp file +
+# mv, which stamped a fresh mtime as a side effect. `claim-digest.sh` reads that
+# same mtime to decide "is the incumbent still live", so the 4h window was
+# silently renewed on EVERY rehydrate — it measured "time since last claim".
+# Since 0.4.2 the claim preserves mtime (the age signal needs it), so the window
+# now measures what `context_owner_window` is documented to measure: how recently
+# another session WROTE the digest.
+#
+# Measured on this branch: a digest whose CONTENT is 5h old but was rehydrated
+# one minute ago is no longer side-filed on collision, where pre-0.4.2 it was.
+# Accepted, not a regression to undo: what is unprotected there is content nobody
+# has touched in over a window, and the rehydrating session is holding it in
+# context; its next /snapshot rewrites the file and restores full protection.
+# The case that actually matters — a session that WROTE recently — is unchanged.
+# Widening OWNER_WINDOW_DEFAULT to compensate would be tuning a constant to
+# restore an accident; a separate "last claimed" marker would drag a best-effort
+# guard into invariant 15's writer/reader/purge discipline. Neither is worth it.
+CW="$TMP/ownerwin"; mkdir -p "$CW/.reload"
+mkfix(){ printf -- '---\nsession_id: "B"\nintent: "live"\n---\n## Next concrete step\nstep\n' > "$CW/.reload/session.md"; }
+guard(){ CLAUDE_PROJECT_DIR="$CW" bash "$ROOT/scripts/claim-digest.sh" "$1" 2>/dev/null; }
+mkfix
+ck "a JUST-WRITTEN foreign digest is still protected (the case that matters)" '[ -n "$(guard C)" ]'
+ck "and it was side-filed, not merely warned about" '[ -f "$CW/.reload/session.B.md" ]'
+rm -f "$CW/.reload/session.B.md"
+# Now the same digest, its CONTENT aged past the window, then claimed by a
+# rehydrating session. The claim must NOT renew the window.
+mkfix
+OLDSTAMP="$(date -v-5H +%Y%m%d%H%M 2>/dev/null || date -d '5 hours ago' +%Y%m%d%H%M 2>/dev/null)"
+if [ -n "$OLDSTAMP" ]; then
+  touch -t "$OLDSTAMP" "$CW/.reload/session.md"
+  MT_BEFORE="$(stat -c %Y "$CW/.reload/session.md" 2>/dev/null || stat -f %m "$CW/.reload/session.md" 2>/dev/null)"
+  printf 'B' > "$CW/.reload/pending"
+  printf '%s' '{"session_id":"B2","source":"clear"}' \
+    | CLAUDE_PROJECT_DIR="$CW" CLAUDE_PLUGIN_ROOT="$ROOT" bash "$ROOT/hooks/sessionstart-hook.sh" >/dev/null 2>&1
+  MT_AFTER="$(stat -c %Y "$CW/.reload/session.md" 2>/dev/null || stat -f %m "$CW/.reload/session.md" 2>/dev/null)"
+  ck "a rehydrate does NOT renew the collision window (mtime survives the claim)" '[ "$MT_BEFORE" = "$MT_AFTER" ]'
+  ck "so a digest older than the window is no longer treated as live" '[ -z "$(guard C)" ]'
+  ck "and nothing was side-filed for it" '[ ! -f "$CW/.reload/session.B2.md" ]'
+else
+  echo "  SKIP: neither BSD nor GNU date relative form available"
+fi
+
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail
