@@ -251,6 +251,17 @@ head_drift() {
   # Does this repo actually know that commit? `^{commit}` rejects a sha that
   # resolves to a tree/blob, and an unknown sha fails outright.
   git -C "$PROJECT_DIR" rev-parse -q --verify "${stamp}^{commit}" >/dev/null 2>&1 || return 0
+  # ANCESTRY, not merely resolvability — the last and least obvious gate.
+  # `rev-list --count A..HEAD` answers happily when A and HEAD have DIVERGED,
+  # and the number it returns then means "commits on HEAD that are absent from
+  # A", which is not "commits landed since this digest": the digest's own work
+  # is not in that history at all. `.reload/` is per-PROJECT and shared across
+  # branches by design (known landmines), so the trigger is ordinary — snapshot
+  # on a feature branch, switch to main, rehydrate — and every other gate here
+  # passes it (measured: a feature tip against a main 2 commits ahead reports
+  # "2 commits since this digest"). Well-formed and wrong is the one output
+  # shape this function exists to refuse.
+  git -C "$PROJECT_DIR" merge-base --is-ancestor "$stamp" HEAD 2>/dev/null || return 0
   local n
   n="$(git -C "$PROJECT_DIR" rev-list --count "${stamp}..HEAD" 2>/dev/null)"
   [[ "$n" =~ ^[0-9]+$ ]] || return 0
@@ -279,7 +290,11 @@ digest_age_days() {
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 0
   now="$(date +%s 2>/dev/null)"
   [[ "$now" =~ ^[0-9]+$ ]] || return 0
-  [ "$now" -ge "$mtime" ] || return 0        # clock skew / future mtime: say nothing
+  # No separate clock-skew guard: a future mtime makes `days` NEGATIVE, which
+  # fails the threshold test below and is already silent (measured — a mtime
+  # ~1157 days ahead yields days=-1157). An explicit `[ "$now" -ge "$mtime" ]`
+  # here was dead code: deleting it left every test green because it could not
+  # change any outcome. The threshold comparison is the guard.
   days=$(( (now - mtime) / 86400 ))
   [ "$days" -ge "$threshold" ] || return 0
   printf '%s' "$days"

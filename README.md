@@ -49,10 +49,12 @@ claude plugin install cc-reload@cc-reload-plugin
    and *N days old* (from the file's mtime). Both are advisory — they never block a rehydrate, and
    both stay silent unless the number is genuinely measurable.
 
-`git` is a **soft dependency**, used by `scripts/context-block.sh` (branch, HEAD, uncommitted
-paths, recent commits — folded into the digest so the model states repo facts instead of recalling
-them) and by the staleness signals above. Outside a repo, without `git`, in an empty repo or on a
-broken `.git`, every one of those prints nothing and the plugin behaves exactly as it did before.
+`git` is a **soft dependency** with three call sites: `scripts/context-block.sh` (branch, HEAD,
+uncommitted paths, recent commits — folded into the digest so the model states repo facts instead
+of recalling them), the commit-drift count above, and the `head:` stamp PreCompact writes. Outside
+a repo, without `git`, in an empty repo or on a broken `.git`, every one of those prints nothing
+and the plugin behaves exactly as it did before. The *N days old* signal is mtime-only, so it keeps
+working with no repo at all.
 
 ### How occupancy is measured (and its limits)
 
@@ -226,7 +228,7 @@ cc-reload/
 ├── scripts/statusline.sh             # statusline segment renderer (native or via composer)
 ├── scripts/reload-config.sh          # validated get/set for .reload/config (used by /reload-budget)
 ├── scripts/claim-digest.sh           # concurrent-session guard: side-files a foreign+fresh incumbent digest
-├── scripts/context-block.sh          # the plugin's ONLY git caller: branch/HEAD/dirty/recent commits, silent without git
+├── scripts/context-block.sh          # the free-form git caller: branch/HEAD/dirty/recent commits, silent without git
 ├── commands/{reload-budget.md, snapshot.md, reload.md}
 ├── skills/maintaining-session-continuity/SKILL.md
 │   └── evals/trigger-eval.json       # triggering benchmark for the skill description

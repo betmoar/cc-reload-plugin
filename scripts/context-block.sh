@@ -65,8 +65,18 @@ printf -- '- branch: %s @ %s\n' "$BRANCH" "$SHA"
 # Uncommitted work. `status --porcelain` is the stable, script-facing form.
 # Cap the listing: a digest is ~30 lines and a big refactor can dirty hundreds
 # of paths, so name the first few and count the rest.
-STATUS="$(g status --porcelain)"
-if [ -z "$STATUS" ]; then
+#
+# Test the EXIT STATUS, not just emptiness. `git status` prints nothing when it
+# FAILS (corrupt or locked index, an I/O error, a permission problem) — so
+# `[ -z "$STATUS" ]` alone cannot tell "clean" from "could not look", and the
+# first cut of this script asserted "working tree clean" over a genuinely dirty
+# tree whenever the index was unreadable (measured with a deliberately corrupted
+# .git/index). Silence about dirtiness is fine; a false claim of cleanliness is
+# the silent-wrong shape this whole file is written to avoid, and it lands in a
+# digest a fresh session is told to trust.
+if ! STATUS="$(g status --porcelain)"; then
+  printf -- '- (working tree state unavailable — git status failed)\n'
+elif [ -z "$STATUS" ]; then
   printf -- '- working tree clean\n'
 else
   N="$(printf '%s\n' "$STATUS" | grep -c .)"

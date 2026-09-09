@@ -10,7 +10,7 @@ The digest — the payload the whole plugin exists to carry — had never been i
 merits since v0.1.0. All 460 checks pinned the *transport* (markers, handshake, occupancy scan,
 config readers); none pinned the payload. This release pins the format, closes the two ways a
 digest silently lost information, gives it repo facts read from `git` instead of recalled, and
-lets it report its own staleness. 460 → 558 checks.
+lets it report its own staleness. 460 → 598 checks.
 
 ### Added
 - **Digest section PARITY test** (`tests/test-hooks.sh`, invariant 18) — `templates/session.md` is
@@ -28,7 +28,8 @@ lets it report its own staleness. 460 → 558 checks.
   said what was asked for. Free at the parser layer (`digest_field` reads frontmatter generically,
   `claim_digest` already preserves unknown keys) — now pinned by a test that it survives the
   rehydrate claim byte-identical.
-- **`scripts/context-block.sh`** — the plugin's only `git` caller: branch, short HEAD, uncommitted
+- **`scripts/context-block.sh`** — the free-form `git` caller (one of three git call sites — see
+  invariant 20): branch, short HEAD, uncommitted
   paths (capped, with a count), `diff --shortstat`, recent commit subjects. Prints **nothing** and
   exits 0 outside a repo, with no `git` on PATH, in an empty repo (no HEAD to resolve), or on a
   broken `.git` — the same fail-open-silent shape as `proxy_window()`. Half a block, or one with
@@ -53,9 +54,9 @@ lets it report its own staleness. 460 → 558 checks.
   subagent given the digest **alone** — no conversation summary, nothing recalled — and asks what
   it would do next, which files it would open, and what the original ask was. Divergence is the
   defect, surfaced while it can still be fixed. Writes nothing, arms nothing, applies nothing
-  silently. The command *contract* is pinned (13 checks), not the verdict: a live subagent is not
+  silently. The command *contract* is pinned (14 checks), not the verdict: a live subagent is not
   deterministic, so there is no CI fixture suite.
-- **`tests/test-context-block.sh`** — 69 checks over real repos built per case (clean, dirty,
+- **`tests/test-context-block.sh`** — 87 checks over real repos built per case (clean, dirty,
   detached HEAD, empty, broken `.git`, non-repo, empty PATH).
 
 ### Fixed
@@ -76,11 +77,30 @@ lets it report its own staleness. 460 → 558 checks.
   *Open questions & risks* when there is one.
 - **The staleness signals refuse to guess.** A confident wrong number is worse than silence: an
   authoritative "0 commits behind" over a badly stale digest is believed by a session that just
-  lost its context. Two gates, each found unpinned by mutation testing and each then measured:
+  lost its context. Four gates, each found unpinned by mutation testing and each then measured:
   without the anchored hex gate, a `head:` of `HEAD~2` — untrusted digest text — resolves and
   counts as 2; without `^{commit}`, a hex-valid **blob** sha yields `rev-list --count` = 3 with
-  exit 0. (An unknown sha already fails `rev-list` outright with exit 128, which is why pinning
-  that second gate needs a blob and not a made-up sha.)
+  exit 0; without `--is-inside-work-tree`, a **bare** repo answers normally and reports drift for a
+  directory with no working tree; and without `merge-base --is-ancestor`, a **diverged** stamp
+  answers happily. (An unknown sha already fails `rev-list` outright with exit 128, which is why
+  pinning the `^{commit}` gate needs a blob and not a made-up sha.)
+- **Drift was reported across diverged branches.** `.reload/` is per-project and shared across
+  branches by design, so the ordinary sequence — snapshot on a feature branch, switch to main,
+  rehydrate — asked `rev-list --count <feature-tip>..HEAD`, which answers happily. Measured: "2
+  commits since this digest" for a history the digest's own work is not in at all. The count is
+  well-formed and means something else entirely ("commits on HEAD absent from the stamp"), so it
+  now requires the stamp to be an **ancestor** of HEAD. Found in review; the first cut's other
+  gates all passed this input.
+- **`context-block.sh` reported a failed `git status` as a clean tree.** `git status --porcelain`
+  prints nothing when it *fails* (corrupt or locked index, I/O error, permissions), and testing
+  emptiness alone cannot distinguish that from a genuinely clean tree. Measured with a deliberately
+  corrupted `.git/index`: the block asserted "working tree clean" over a tree with uncommitted
+  content — a false claim landing in a digest a fresh session is told to trust. Now tests the exit
+  status and says the state is unavailable instead. Found in review.
+- **Dead code removed:** an explicit clock-skew guard in `digest_age_days()`. A future mtime already
+  yields a negative `days` that fails the threshold test (measured: `days=-1157`), so the check
+  could not change any outcome — deleting it left every test green, which is the definition of a
+  guard that is decorative rather than defensive.
 - **The mtime trap, both halves** (invariant 20). `claim_digest` rewrites the digest through a temp
   file + `mv`, and the `mv` stamps a brand-new mtime — measured: a file backdated to 2020 reads as
   `now` immediately after. So the age must be captured *before* the claim (or the signal dies

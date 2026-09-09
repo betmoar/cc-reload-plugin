@@ -243,20 +243,38 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     (Tests: "the REINJECT tells the model to read the existing digest first", "the REINJECT names
     carrying unresolved items forward", "the REINJECT keeps the mission verbatim, never rewritten",
     "the rehydrate carries the unresolved Open question across"; e2e cycle 10.)
-20. **git is a SOFT dependency with exactly one caller, and every derived signal is silent unless
-    it is MEASURED.** (0.4.2.) `scripts/context-block.sh` is the only place in the plugin that runs
-    `git`; everything else is bash + jq + coreutils. It prints NOTHING and exits 0 on no git, not a
-    work tree, an empty repo (no HEAD to resolve), or a broken `.git` — the `proxy_window()` shape.
+20. **git is a SOFT dependency with exactly THREE call sites, and every derived signal is silent
+    unless it is MEASURED.** (0.4.2.) Count them precisely, because the count is what tells the
+    next maintainer where to look: `scripts/context-block.sh` (the only *free-form* caller — the
+    one script whose whole purpose is git), `head_drift()` in `hooks/lib.sh`, and the `head:` stamp
+    in `hooks/precompact-hook.sh`. Everything else is bash + jq + coreutils. Adding a fourth means
+    auditing all four against this invariant, not just the script — the same reason invariant 16
+    counts its config readers out loud. Each site prints NOTHING and exits 0 on no git, not a work
+    tree, an empty repo (no HEAD to resolve), or a broken `.git` — the `proxy_window()` shape.
     Half a block, or one with git's stderr in it, lands in a digest that is injected into a fresh
-    context as fact.
+    context as fact. `digest_age_days()` is deliberately NOT one of them: it reads mtime, so the
+    age axis keeps working in a directory with no repo at all.
     The staleness signals follow the same rule, and the failure they guard is a CONFIDENT WRONG
     NUMBER, which is strictly worse than today's silence: an authoritative "0 commits behind" over
     a badly stale digest is believed by a session that just lost its context. `head_drift()` emits
-    only on a positive match of two real commits, and its two gates are each load-bearing and were
-    each measured (2026-09-09): without the anchored hex gate a stamp of `HEAD~2` — untrusted
-    digest text — resolves and counts as 2; without `^{commit}` a hex-valid BLOB sha yields
-    `rev-list --count` = 3 with exit 0. An unknown sha, by contrast, already fails `rev-list`
-    outright (exit 128), so a made-up sha does NOT exercise that second gate — pin it with a blob.
+    only on a positive match, and its FOUR gates are each load-bearing and each measured
+    (2026-09-09): without the anchored hex gate a stamp of `HEAD~2` — untrusted digest text —
+    resolves and counts as 2; without `^{commit}` a hex-valid BLOB sha yields `rev-list --count` =
+    3 with exit 0; without `--is-inside-work-tree` a BARE repo answers normally (its object
+    database resolves shas fine), reporting drift for a directory with no working tree; and without
+    `merge-base --is-ancestor` a DIVERGED stamp answers happily — the realistic one, since
+    `.reload/` is per-project and shared across branches, so snapshot-on-feature then switch-to-main
+    measured "2 commits since this digest" for a history the digest's work is not in at all. An
+    unknown sha, by contrast, already fails `rev-list` outright (exit 128), so a made-up sha does
+    NOT exercise the `^{commit}` gate — pin that one with a blob.
+    `scripts/context-block.sh` has the same shape one level down: `git status --porcelain` prints
+    NOTHING when it FAILS, so testing emptiness alone reported "working tree clean" over a dirty
+    tree whenever the index was unreadable (measured with a corrupted `.git/index`). Test the EXIT
+    STATUS: empty-because-clean and empty-because-it-failed are different answers.
+    A guard that cannot be made red is DEAD CODE, not defence: an explicit clock-skew check in
+    `digest_age_days()` was deleted for exactly that reason — a future mtime already yields a
+    negative `days` that fails the threshold (measured: `days=-1157`), so the check could not change
+    any outcome. Before adding a guard here, mutate it and watch a case go red.
     `digest_age_days()` reads FILESYSTEM MTIME, never the frontmatter `updated_at` (model-written,
     and routinely copied forward from the previous digest).
     **The mtime trap, in two halves — both had to be fixed, and the second was found only by
@@ -266,7 +284,13 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     *within* a session. (b) `claim_digest` must RESTORE the mtime afterwards (`touch -r` from a
     reference file taken before the rewrite), or the signal decays *across* sessions: every
     rehydrate rejuvenates the file, so a digest claimed on each `/clear` reads as fresh forever
-    however stale its content is. Measured 2026-09-09 on this repo: content from 2026-07-10
+    however stale its content is.
+    **(b) subsumes (a), so each needs its OWN case:** with the restore working, capturing after the
+    claim gives the same answer, and a whole-hook test cannot tell the orderings apart — a review
+    measured exactly that against an earlier comment here claiming it could. The ordering is kept as
+    defence in depth (it is all that stands if the restore ever fails) and is pinned by running the
+    hook with a no-op `touch` shim on PATH. Do not "simplify" either half away because the suite
+    stays green when you delete it alone. Measured 2026-09-09 on this repo: content from 2026-07-10
     describing v0.1.9 with the repo on v0.4.1 — two months stale — and an mtime from that same
     morning, because a SessionStart had claimed it. The one case the signal exists for is the one
     it would have missed; a unit suite cannot catch this, only running the real hook against a real
@@ -279,8 +303,11 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     (Tests: "prints nothing outside a repo", "prints nothing with no git on PATH", "empty repo
     never leaks git's fatal", "detached HEAD is named as such, not as a branch", "a revision
     EXPRESSION is not a sha", "a blob sha resolves but is not a commit", "stamp == live HEAD: no
-    drift line", "age is measured BEFORE the claim rewrites the file", "the claim PRESERVES mtime",
-    "a SECOND rehydrate still reports the true age", "the fallback names the branch and sha".)
+    drift line", "age is captured BEFORE the claim", "the claim PRESERVES mtime",
+    "a SECOND rehydrate still reports the true age", "the fallback names the branch and sha",
+    "a stamp that is not an ancestor of HEAD reports no drift", "a true ancestor still reports its
+    drift", "a bare repo yields no drift line", "a failed git status never claims the tree is
+    clean", "a future mtime never reports a negative age", "exactly 1 day old still reports".)
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -369,7 +396,7 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
 | `model_window()` cases | tests "model_window: …" block, README "How occupancy is measured", the SKILL.md note on windows |
 | cc-proxy model windows (GLM/DeepSeek/Qwen ids) | curated against `cc-proxy-plugin/scripts/list-models.js` (`CONTEXT_WINDOW` const) as of 2026-08-04 — re-check that source before adding/editing a proxy case; only add a case when the real window differs from the 1M default (invariant 5). Since 0.3.1 this table is the FALLBACK — cc-proxy v0.5.1+'s `GET /v1/models` `context_window` field (positive integer tokens; curated ids include it, uncurated ids OMIT it — never `null`) is consulted first by `proxy_window()`. If cc-proxy's response shape or the omit-not-null contract changes, `proxy_window()`'s jq extraction in `hooks/lib.sh` must change too |
 | `proxy_window()` (`hooks/lib.sh`) | `hooks/sessionstart-hook.sh` (sole caller), `tests/test-hooks.sh` (stub-`curl`-on-PATH seam), README "How occupancy is measured", SKILL.md windows note, CLAUDE.md decision note above |
-| `scripts/context-block.sh`, `head_drift()` or `digest_age_days()` (`hooks/lib.sh`) — the ONLY git in the plugin | `tests/test-context-block.sh` (it builds REAL repos: clean, dirty, detached, empty, broken `.git`, non-repo, no-git-on-PATH), `hooks/precompact-hook.sh` (folds the block into the fallback and stamps `head:`), `hooks/sessionstart-hook.sh` (banner — and the age capture must stay ABOVE `claim_digest`, invariant 20), the `head:` line in `templates/session.md` + `commands/snapshot.md` + the REINJECT, README "How it works", SKILL.md. Keep every signal fail-open-SILENT: a wrong number is worse than none |
+| `scripts/context-block.sh`, `head_drift()` (`hooks/lib.sh`) or the `head:` stamp in `precompact-hook.sh` — the THREE git call sites (invariant 20); `digest_age_days()` is mtime-only and needs no repo | `tests/test-context-block.sh` (it builds REAL repos: clean, dirty, detached, empty, broken `.git`, non-repo, no-git-on-PATH), `hooks/precompact-hook.sh` (folds the block into the fallback and stamps `head:`), `hooks/sessionstart-hook.sh` (banner — and the age capture must stay ABOVE `claim_digest`, invariant 20), the `head:` line in `templates/session.md` + `commands/snapshot.md` + the REINJECT, README "How it works", SKILL.md. Keep every signal fail-open-SILENT: a wrong number is worse than none |
 | Hook JSON output shape | Claude Code hook schema (systemMessage / decision:block / hookSpecificOutput.additionalContext) — verify against current CC docs before changing |
 | `context_budget_pct` semantics (default 45, 0=off) | `stop-hook.sh`, `scripts/statusline.sh` (independent reader!), `commands/reload-budget.md`, README, SKILL.md |
 | `context_budget_mode` semantics (default notify; value `snapshot`, legacy `checkpoint` aliased) or the +10 ladder step | `stop-hook.sh` (mode branch reads `snapshot\|checkpoint` + ladder), `scripts/reload-config.sh` (validation normalizes `checkpoint`→`snapshot`), `commands/reload-budget.md`, README "How it works" + Configuration, SKILL.md cycle step 1, both test files' alias cases |

@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034  # OUT is consumed inside ck()'s eval'd assertions
 #
-# scripts/context-block.sh — the ONLY git caller in this plugin.
+# scripts/context-block.sh — the free-form git caller (invariant 20).
+#
+# Three sites in the plugin run git: this script, head_drift() in hooks/lib.sh,
+# and precompact-hook.sh's head: stamp. This is the only one whose whole purpose
+# is git; the other two make one narrowly-scoped call each and are covered by
+# the drift/fallback cases further down this file. digest_age_days() reads mtime
+# and needs no repo at all.
 #
 # Everything else here is bash + jq + coreutils. git is a SOFT dependency: the
 # script exists so a digest can state what a shell already knows (branch, HEAD,
@@ -206,16 +212,22 @@ ck "stale-by-age still rehydrates (advisory, never a gate)" 'printf "%s" "$OUT" 
 mkdesigest "$R" ""                                   # written just now
 OUT="$(ss "$R" '{"session_id":"AGE-2","source":"clear"}')"
 ck "a fresh digest gets no age line" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"days old\")" >/dev/null'
-# THE ORDERING TRAP, pinned. claim_digest rewrites the digest through a temp
-# file + mv, and the mv stamps a brand-new mtime — measured: a file backdated to
-# 2020 reads as `now` the instant it is claimed. So the age MUST be captured
-# before claim_digest runs, or the signal is structurally dead on the ordinary
-# /clear path (the only path it exists for). Moving that capture below the claim
-# leaves the whole suite green except this case.
+# THE MTIME TRAP has TWO independent guards, and each needs its own red.
+# claim_digest rewrites the digest through a temp file + mv, and the mv stamps a
+# brand-new mtime (measured: a file backdated to 2020 reads as `now` the instant
+# it is claimed). Two things keep the age signal alive:
+#   (a) sessionstart-hook.sh captures the age BEFORE calling claim_digest, and
+#   (b) claim_digest RESTORES the original mtime after its mv.
+# (b) subsumes (a): with the restore in place, capturing after the claim yields
+# the same answer, so a whole-hook case CANNOT discriminate the ordering — a
+# review measured exactly that, and an earlier version of this comment claiming
+# otherwise was wrong. The ordering is kept as defence in depth (it is the only
+# thing standing if the restore ever silently fails, e.g. touch unavailable), so
+# it gets a DIRECT unit case below instead of a hook-level one.
 mkdesigest "$R" ""
 touch -t 202001010000 "$R/.reload/session.md"
 OUT="$(ss "$R" '{"session_id":"AGE-3","source":"clear"}')"
-ck "age is measured BEFORE the claim rewrites the file (mv resets mtime)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"days old\")" >/dev/null'
+ck "a stale digest survives a claim and still reports its age" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"days old\")" >/dev/null'
 ck "and the claim did happen (digest now owned by AGE-3)" 'grep -q "^session_id: \"AGE-3\"" "$R/.reload/session.md"'
 # ...and capturing early is only half the fix. The claim must also PRESERVE the
 # mtime, or the signal decays across sessions instead of within one: every
@@ -236,6 +248,126 @@ ss "$R" '{"session_id":"AGE-5","source":"clear"}' >/dev/null       # 1st rehydra
 printf 'AGE-5' > "$R/.reload/pending"
 OUT="$(ss "$R" '{"session_id":"AGE-6","source":"clear"}')"          # 2nd still sees it as old
 ck "a SECOND rehydrate still reports the true age" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"days old\")" >/dev/null'
+
+echo "-- guard (a) on its own: the ordering, with the restore disabled --"
+# Runs LAST in this block, because its `touch` shim would otherwise leak into the
+# mtime cases above (measured — it turned the preservation case red for the wrong
+# reason). DISABLE the restore with a no-op `touch` (the shape of a real failure:
+# a read-only FS, a hardened PATH, a touch that refuses) and the capture ORDER is
+# the only thing left holding the signal up. This is what makes the ordering
+# load-bearing rather than decorative, and it goes red if the capture moves below
+# claim_digest — which a hook-level case CANNOT detect while the restore works.
+NOTOUCH="$TMP/notouch"; mkdir -p "$NOTOUCH"
+printf '#!/bin/sh\nexit 0\n' > "$NOTOUCH/touch"; chmod +x "$NOTOUCH/touch"
+mkdesigest "$R" ""
+touch -t 202001010000 "$R/.reload/session.md"
+OUT="$(printf '%s' '{"session_id":"AGE-7","source":"clear"}' \
+  | PATH="$NOTOUCH:$PATH" CLAUDE_PROJECT_DIR="$R" CLAUDE_PLUGIN_ROOT="$ROOT" bash "$HOOKS/sessionstart-hook.sh" 2>/dev/null)"
+ck "the shim really did disable the restore (else the next case is vacuous)" '[ "$(stat -c %Y "$R/.reload/session.md" 2>/dev/null || stat -f %m "$R/.reload/session.md" 2>/dev/null)" -gt "$(( $(date +%s) - 86400 ))" ]'
+ck "age is captured BEFORE the claim (holds even when the mtime restore cannot run)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"days old\")" >/dev/null'
+
+echo "== the remaining guards, each pinned on its own (a review found all four unpinned) =="
+# Every guard below survived deletion with the suite green until these cases
+# existed. An unpinned guard is indistinguishable from a decorative one, and the
+# next maintainer tidying "redundant" checks has nothing to stop them.
+
+echo "-- head_drift: the work-tree guard is NOT redundant (a BARE repo resolves shas) --"
+# rev-parse --verify and rev-list both succeed against a bare repo's object
+# database (measured), so without --is-inside-work-tree, head_drift would report
+# drift for a directory that has no working tree at all — a number about a repo
+# the session is not editing.
+BARE="$TMP/bare.git"; git_env git clone -q --bare "$R" "$BARE"
+BARE_OLD="$(git_env git -C "$BARE" rev-parse --short HEAD~1 2>/dev/null)"
+mkdesigest "$BARE" "$BARE_OLD"
+# Prove the bare repo really CAN answer, else the case passes for the wrong
+# reason (an empty bare repo would be silent no matter what the guard does).
+ck "the bare repo can resolve the stamp (else the next case is vacuous)" '[ -n "$BARE_OLD" ] && [ "$(git_env git -C "$BARE" rev-list --count "$BARE_OLD..HEAD" 2>/dev/null)" -ge 1 ]'
+OUT="$(ss "$BARE" '{"session_id":"BARE-1","source":"clear"}')"
+ck "a bare repo yields no drift line (work-tree guard)" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"commits since\")" >/dev/null'
+
+echo "-- digest_age_days: a FUTURE mtime is silence, never a negative age --"
+# Clock skew, a VM time jump, a file from a machine ahead of this one. A negative
+# `days` must never reach the banner. (This is covered by the threshold test, not
+# by a separate skew guard — an explicit one was DEAD CODE and was removed:
+# deleting it changed no outcome, because days=-1157 already fails `-ge 1`.)
+mkdesigest "$R" ""
+touch -t 209901010000 "$R/.reload/session.md"     # far future, BSD/GNU portable
+OUT="$(ss "$R" '{"session_id":"SKEW-1","source":"clear"}')"
+ck "a future mtime reports no age at all" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"days old\")" >/dev/null'
+ck "a future mtime never reports a negative age" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"-[0-9]+ days\")" >/dev/null'
+ck "skewed digest still rehydrates (advisory, never a gate)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step\")" >/dev/null'
+
+echo "-- head_drift: a DIVERGED stamp is silence, not a well-formed wrong count --"
+# The most realistic way to get a confident wrong number, and the one the first
+# cut missed. `.reload/` is per-PROJECT and shared across branches by design
+# (CLAUDE.md known landmines), so: snapshot on a feature branch, switch to main,
+# rehydrate. `rev-list --count <feature-tip>..HEAD` answers happily — measured 2
+# — but that is "commits on main absent from feature", NOT "commits landed since
+# this digest". The digest's own work is not in that history at all. Only an
+# ancestry check can tell the two apart; every other guard passes this input.
+DIV="$TMP/diverged"; mkdir -p "$DIV"; git_env git init -q -b main "$DIV"
+printf 'a\n' > "$DIV/a"; git_env git -C "$DIV" add a; git_env git -C "$DIV" commit -qm base
+git_env git -C "$DIV" checkout -q -b feature
+printf 'f\n' > "$DIV/f"; git_env git -C "$DIV" add f; git_env git -C "$DIV" commit -qm "feature work"
+FEAT_TIP="$(git_env git -C "$DIV" rev-parse --short HEAD)"
+git_env git -C "$DIV" checkout -q main
+for i in 1 2; do printf '%s\n' "$i" > "$DIV/m$i"; git_env git -C "$DIV" add "m$i"; git_env git -C "$DIV" commit -qm "main $i"; done
+# Prove the raw count is non-empty, or the case passes for the wrong reason.
+ck "the diverged stamp DOES yield a raw count (else the next case is vacuous)" '[ "$(git_env git -C "$DIV" rev-list --count "$FEAT_TIP..HEAD" 2>/dev/null)" -ge 1 ]'
+mkdesigest "$DIV" "$FEAT_TIP"
+OUT="$(ss "$DIV" '{"session_id":"DIV-1","source":"clear"}')"
+ck "a stamp that is not an ancestor of HEAD reports no drift" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"commits since\")" >/dev/null'
+ck "the diverged digest still rehydrates" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"step\")" >/dev/null'
+# ...and the ordinary ancestor case must still report, or the fix is just a mute.
+git_env git -C "$DIV" checkout -q feature
+ANC="$(git_env git -C "$DIV" rev-parse --short HEAD)"
+printf 'g\n' > "$DIV/g"; git_env git -C "$DIV" add g; git_env git -C "$DIV" commit -qm "more feature work"
+mkdesigest "$DIV" "$ANC"
+OUT="$(ss "$DIV" '{"session_id":"DIV-2","source":"clear"}')"
+ck "a true ancestor still reports its drift (the fix is not a blanket mute)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"1 commits since\")" >/dev/null'
+
+echo "-- context-block: a FAILED git status is never reported as a clean tree --"
+# `git status --porcelain` prints nothing on failure (corrupt/locked index, I/O
+# error, permission trouble), and the first cut tested `[ -z "$STATUS" ]` — so a
+# broken index rendered as "working tree clean" over a genuinely dirty tree.
+# Measured: with a deliberately corrupted .git/index the block asserted clean
+# while a.txt held uncommitted content. Empty-because-clean and
+# empty-because-it-failed must not be the same branch.
+CORRUPT="$TMP/corrupt"; mkdir -p "$CORRUPT"; git_env git init -q -b main "$CORRUPT"
+printf 'a\n' > "$CORRUPT/a.txt"; git_env git -C "$CORRUPT" add a.txt; git_env git -C "$CORRUPT" commit -qm c1
+printf 'UNCOMMITTED\n' >> "$CORRUPT/a.txt"
+printf 'garbage, not an index' > "$CORRUPT/.git/index"
+ck "the corrupted index really does break git status (else the next case is vacuous)" '! git_env git -C "$CORRUPT" status --porcelain >/dev/null 2>&1'
+OUT="$(run "$CORRUPT")"
+ck "a failed git status never claims the tree is clean" '! printf "%s" "$OUT" | grep -qi "working tree clean"'
+ck "a failed git status leaks no git error text" '! printf "%s" "$OUT" | grep -qi "fatal:\|error:"'
+
+echo "-- digest_age_days: the threshold boundary is >=, not > --"
+# A digest exactly at the threshold must report. `-gt` here silently swallows the
+# first day of staleness, which is precisely when a nudge is still cheap to act
+# on. Backdate to just over 1 day so the integer division lands on exactly 1.
+mkdesigest "$R" ""
+BOUND="$(date -v-25H +%Y%m%d%H%M 2>/dev/null || date -d '25 hours ago' +%Y%m%d%H%M 2>/dev/null)"
+if [ -n "$BOUND" ]; then
+  touch -t "$BOUND" "$R/.reload/session.md"
+  OUT="$(ss "$R" '{"session_id":"BOUND-1","source":"clear"}')"
+  ck "exactly 1 day old still reports (threshold is -ge, not -gt)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"1 days old\")" >/dev/null'
+else
+  echo "  SKIP: neither BSD nor GNU date relative form available"
+fi
+
+echo "-- PreCompact: an unresolvable HEAD omits the stamp, never writes an empty one --"
+# rev-parse --short prints NOTHING on an orphan/empty HEAD (measured: exit 128,
+# empty stdout), and the `[ -n "$HEADSHA" ]` test is what omits the line. The sha
+# regex beside it is belt-and-braces for a value git is not observed to produce,
+# so it is deliberately NOT claimed as pinned — do not read this case as covering
+# it. What IS pinned: no `head:` line, and frontmatter that still closes.
+ORPH="$TMP/orphan"; mkdir -p "$ORPH"; git_env git init -q -b main "$ORPH"
+rm -rf "$ORPH/.reload"
+pc "$ORPH" '{"session_id":"ORPH-1","trigger":"auto"}' >/dev/null
+ck "an unresolvable HEAD omits the head: line entirely" '! grep -q "^head:" "$ORPH/.reload/session.md"'
+ck "and the fallback digest is still written and honest" 'grep -q "mechanical fallback" "$ORPH/.reload/session.md"'
+ck "and its frontmatter still closes (an empty stamp would not break the fence)" '[ "$(grep -c "^---$" "$ORPH/.reload/session.md")" -eq 2 ]'
 
 echo "== /snapshot --check: an AUDIT path, structurally unable to write or arm =="
 # The one thing no gate in this plugin can test is whether a digest is any GOOD
