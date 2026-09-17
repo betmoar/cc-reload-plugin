@@ -19,18 +19,19 @@ HOOK_INPUT="$(cat)"
 SESSION_ID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""')"
 
 ensure_reload_dir
-# arm + stamp its owner (same non-empty guard as stop-hook.sh — see 3b)
-if [ -n "$SESSION_ID" ]; then
-  printf '%s' "$SESSION_ID" > "$PENDING" 2>/dev/null || touch "$PENDING" 2>/dev/null
-else
-  touch "$PENDING" 2>/dev/null
-fi
-# Verify with -f, the test SessionStart's rehydrate gate uses: a directory at
-# .reload/pending takes a `touch` but can never be an arm (audit 2026-09-02
-# F05). Say so — an unarmed compaction is exactly the loss this hook backstops.
-# Still exit 0: a warning, never a failed compaction.
-if [ ! -f "$PENDING" ]; then
-  jq -n --arg m "⚠️ cc-reload: could not write the arm marker (.reload/pending is not a writable regular file) — reload NOT armed; this compaction will not rehydrate. Remove whatever is at .reload/pending, then run /snapshot." \
+# Arm for this lineage (lib.sh arm_reload: sid + pid, verified with -f — the
+# test SessionStart's rehydrate gate uses: a directory at the slot takes a
+# `touch` but can never be an arm, audit 2026-09-02 F05). On failure, say so:
+# an unarmed compaction is exactly the loss this hook backstops. Claude Code
+# DISCARDS a PreCompact hook's systemMessage (docs, hooks reference), so the
+# channel that actually reaches the user is the journal's `arm-failed` line,
+# which the SessionStart(compact) that follows surfaces (F06). The JSON below
+# is kept for harnesses that do relay it; stderr likewise. Still exit 0: a
+# warning, never a failed compaction.
+if ! arm_reload "$SESSION_ID"; then
+  ARMP="$(arm_path)"
+  printf 'cc-reload: reload NOT armed — %s is not a writable regular file\n' "$ARMP" >&2
+  jq -n --arg m "⚠️ cc-reload: could not write the arm marker (${ARMP#"$PROJECT_DIR/"} is not a writable regular file) — reload NOT armed; this compaction will not rehydrate. Remove whatever is there, then run /snapshot." \
     '{systemMessage:$m}'
 fi
 

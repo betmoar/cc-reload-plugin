@@ -2,6 +2,13 @@
 # shellcheck disable=SC2034  # OUT is consumed inside ck()'s eval'd assertions
 # claim-digest.sh + pretooluse-hook.sh tests. Run: bash tests/test-claim-digest.sh
 set -uo pipefail
+# CLAUDE_PID is SCRUBBED, not inherited (0.5.0): Claude Code exports its pid to
+# every child, so a suite run from inside a Claude Code session would make the
+# hooks write per-lineage arms (pending.<pid>) where these fixtures expect the
+# bare `pending`, and go red on an untouched tree while CI stays green — the
+# same trap ANTHROPIC_BASE_URL set (tests/test-hooks.sh). The lineage rules
+# have their own suite, tests/test-concurrent.sh, which sets it per call.
+export CLAUDE_PID=""
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/.reload"
@@ -272,7 +279,11 @@ ck "snapshot.md arms with an owner, not bare touch" '! grep -qE "^[0-9]+\. Arm t
 ck "snapshot.md calls the guard" 'grep -q "claim-digest.sh" "$ROOT/commands/snapshot.md"'
 
 echo "== the documented invariant survives edits =="
-ck "README states the one-session rule" 'grep -qi "one session per working directory" "$ROOT/README.md"'
+# 0.5.0 replaced "one session per working directory" with the lineage rule
+# (invariant 21); the README must state it, and the limits page must still say
+# what the rule does NOT cover.
+ck "README states the lineage rule (own process / left in place)" 'grep -qi "its own process" "$ROOT/README.md" && grep -qi "left in place" "$ROOT/README.md"'
+ck "docs state the guard's limits (heredoc bypass, un-owned digest)" 'grep -qi "heredoc" "$ROOT/docs/concurrent-sessions.md" && grep -qi "un-owned" "$ROOT/docs/concurrent-sessions.md"'
 
 echo "== mtime probe is portable: GNU stat must not be reached BSD-first =="
 # Regression guard for the Linux CI failure. `stat -f` is the FORMAT flag on BSD

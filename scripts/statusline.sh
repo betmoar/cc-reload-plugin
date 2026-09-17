@@ -31,6 +31,7 @@ IN="$(cat)"
 PCT="$(printf '%s' "$IN"  | jq -r '.context_window.used_percentage // empty' 2>/dev/null)"
 SIZE="$(printf '%s' "$IN" | jq -r '.context_window.context_window_size // empty' 2>/dev/null)"
 PROJ="$(printf '%s' "$IN" | jq -r '.workspace.project_dir // .cwd // empty' 2>/dev/null)"
+SID="$(printf '%s' "$IN"  | jq -r '.session_id // empty' 2>/dev/null)"
 
 # No occupancy signal -> render nothing (stable, no flicker of a half-segment).
 [ -n "$PCT" ] || exit 0
@@ -56,7 +57,12 @@ if [ -n "$PROJ" ] && [ -d "$PROJ/.reload" ]; then
   if { [[ "$WROOT" =~ ^[0-9]+$ ]] && [ "$WROOT" -gt 0 ]; }; then
     SIZE="$WROOT"
   elif [ -f "$PROJ/.reload/model" ]; then
-    mwin="$(grep -E '^window:' "$PROJ/.reload/model" 2>/dev/null | head -1 \
+    # THIS session's stamp line first (`session: <sid> <model> <window>`, one per
+    # session since 0.5.0 — another session's startup must not move our tag),
+    # then the legacy `window:` pair. Same shape as lib.sh stamped().
+    mwin=""
+    [ -n "$SID" ] && mwin="$(awk -v s="$SID" '$1=="session:" && $2==s {v=$4} END{print v}' "$PROJ/.reload/model" 2>/dev/null)"
+    [ -n "$mwin" ] || mwin="$(grep -E '^window:' "$PROJ/.reload/model" 2>/dev/null | head -1 \
             | sed -E 's/^window:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//')"
     { [[ "$mwin" =~ ^[0-9]+$ ]] && [ "$mwin" -gt 0 ]; } && SIZE="$mwin"
   fi

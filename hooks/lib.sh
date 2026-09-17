@@ -20,8 +20,15 @@ SUMMARIZING="$RELOAD_DIR/summarizing"  # transient: budget snapshot turn in prog
 NOTIFIED="$RELOAD_DIR/notified"        # notify ladder: last occupancy % a budget notice fired at
 CONFIG="$RELOAD_DIR/config"
 MODELFILE="$RELOAD_DIR/model"          # model id + resolved window, stamped by SessionStart
+JOURNAL="$RELOAD_DIR/journal"          # append-only event log: snapshot/arm/rehydrate/…, hook-written
+JOURNAL_LINES=200                      # cap; the tail is what matters
 
-command -v jq >/dev/null 2>&1 || exit 0
+# The jq guard. CC_RELOAD_NO_JQ_OK=1 is set ONLY by scripts/arm-reload.sh, which
+# uses no jq (it writes a marker and a journal line) and must not silently skip
+# the arm when jq is absent — the /snapshot that calls it reports "armed" on its
+# exit status. No hook ever sets it; a hook without jq cannot parse its input and
+# must exit 0 here (sourced `exit` exits the caller — a known landmine, keep it).
+[ "${CC_RELOAD_NO_JQ_OK:-}" = "1" ] || command -v jq >/dev/null 2>&1 || exit 0
 
 # Create .reload/ and drop a self-ignoring .gitignore the first time, so a plugin
 # user's project never accidentally commits per-session runtime state. A lone "*"
@@ -30,6 +37,170 @@ command -v jq >/dev/null 2>&1 || exit 0
 ensure_reload_dir() {
   mkdir -p "$RELOAD_DIR"
   [ -f "$RELOAD_DIR/.gitignore" ] || printf '*\n' > "$RELOAD_DIR/.gitignore"
+}
+
+# --- process lineage (docs/concurrent-sessions.md; CLAUDE.md invariant 21) ---
+#
+# /clear mints a fresh SESSION id but keeps the PROCESS: Claude Code exports its
+# own pid as CLAUDE_PID to hooks and to the Bash tool (measured on 2.1.274 —
+# a real SessionStart hook saw CLAUDE_PID=<claude pid> while its $PPID was a
+# throwaway `sh -c` wrapper, so $PPID is deliberately NOT a fallback). The pid
+# is therefore the one identity that answers "is this arm mine?" without the
+# v0.1.5 trap (invariant 3): it does not rotate across /clear or /compact, and
+# it rotates across startup/--resume/--continue exactly when the old process is
+# gone. UNDOCUMENTED, like the transcript usage schema — every consumer below
+# fails OPEN to the pre-0.5 single-slot behaviour when it is absent.
+our_pid() { local p="${CLAUDE_PID:-}"; [[ "$p" =~ ^[0-9]+$ ]] && printf '%s' "$p"; return 0; }
+pid_alive() { [[ "${1:-}" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null; }
+
+# A marker (pending*, summarizing) is "sid" on line 1 and, when the writer knew
+# its process, "pid: N" on a later line. Readers take line 1 as the owner id —
+# a pre-0.5 marker is a bare sid with no newline, which reads identically.
+marker_sid() { [ -f "$1" ] || return 0; sed -n '1p' "$1" 2>/dev/null; }
+marker_pid() { [ -f "$1" ] || return 0; sed -n 's/^pid:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$1" 2>/dev/null | head -n 1; }
+# True only when the marker names a pid that is NOT this process AND is alive.
+# Ours, pid-less, unreadable, or dead -> false (consumable / purgeable).
+marker_foreign_live() {
+  local p; p="$(marker_pid "$1")"
+  [ -n "$p" ] || return 1
+  [ "$p" = "$(our_pid)" ] && return 1
+  pid_alive "$p"
+}
+# write_marker <file> <sid>: sid + pid line, then VERIFY -f (invariant 15).
+# `printf >` fails on a directory and `touch` "succeeds" on one, so the -f test
+# is the only honest answer to "is there an arm a reader will find".
+write_marker() {
+  local f="$1" sid="${2:-}" p; p="$(our_pid)"
+  if [ -n "$p" ]; then
+    printf '%s\npid: %s\n' "$sid" "$p" 2>/dev/null > "$f" || touch "$f" 2>/dev/null   # 2> BEFORE >: a failed > reports before a later 2> applies
+  else
+    printf '%s' "$sid" 2>/dev/null > "$f" || touch "$f" 2>/dev/null
+  fi
+  [ -f "$f" ]
+}
+
+# The arm SLOT this process writes: pending.<pid> when the process is known,
+# the legacy bare `pending` otherwise. Per-lineage slots are what let two live
+# sessions in one directory each keep their own reload (F01/F02/F12): B's arm
+# no longer overwrites A's, and neither consumes the other's.
+arm_path() { local p; p="$(our_pid)"; if [ -n "$p" ]; then printf '%s.%s' "$PENDING" "$p"; else printf '%s' "$PENDING"; fi; }
+# arm_reload <sid>: write this lineage's arm. Returns 0 iff a reader will find
+# it (-f). Journals either outcome. The ONE arm writer — stop-hook pass 2,
+# precompact-hook and scripts/arm-reload.sh (for /snapshot) all come here.
+arm_reload() {
+  local sid="${1:-}" f; ensure_reload_dir; f="$(arm_path)"
+  if write_marker "$f" "$sid"; then journal arm "$sid" "${f#"$RELOAD_DIR/"}"; return 0; fi
+  journal arm-failed "$sid" "${f#"$RELOAD_DIR/"} is not a writable regular file"
+  return 1
+}
+# Every arm entry this lineage may consume, own slot FIRST, then the rest
+# newest-first: the legacy bare `pending` and any pending.<pid> whose owner is
+# dead (an orphan — the restart-after-quit case) or is us. Foreign LIVE arms
+# are never listed. Prints one path per line. READER semantics: `-f` only
+# (invariant 15) — a directory at a slot is not an arm and rehydrates nothing;
+# armed_here() below is where a stray directory still counts (fail-open).
+arms_here() {
+  local f own="" rest=()
+  for f in "$PENDING" "$PENDING".*; do
+    [ -f "$f" ] || continue
+    marker_foreign_live "$f" && continue
+    if [ "$f" = "$(arm_path)" ] && [ -n "$(our_pid)" ]; then own="$f"; else rest+=("$f"); fi
+  done
+  [ -n "$own" ] && printf '%s\n' "$own"
+  # shellcheck disable=SC2012  # newest-first by mtime; the names are ours (an array, so a
+  # project path with spaces survives — never xargs here)
+  [ "${#rest[@]}" -gt 0 ] && ls -t "${rest[@]}" 2>/dev/null
+  return 0
+}
+# Foreign LIVE arms (left untouched by this lineage). Prints one path per line.
+arms_foreign_live() {
+  local f
+  for f in "$PENDING" "$PENDING".*; do
+    [ -e "$f" ] || continue
+    marker_foreign_live "$f" && printf '%s\n' "$f"
+  done
+  return 0
+}
+# Is a reload armed for THIS lineage? (pass-1 gate + the notify wording.) Any
+# consumable entry counts, AND any non-file entry at the bare slot or at our
+# own slot (-e, not -f: fail-open, invariant 15 — treating a stray directory
+# as "not armed" re-entered pass 1 on every over-budget Stop, audit F05; a
+# directory can never be foreign-live, so it is never mistaken for theirs).
+armed_here() {
+  [ -n "$(arms_here)" ] && return 0
+  [ -e "$PENDING" ] && ! marker_foreign_live "$PENDING" && return 0
+  [ -e "$(arm_path)" ]
+}
+
+# The newest side-file claim-digest.sh kept for <sid> (session.<sid>.md or
+# session.<sid>.<mtime>.md), or nothing. Same character filter as the writer,
+# so a hostile sid cannot become a glob.
+sidefile_for() {
+  local id; id="$(printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9_-')"
+  [ -n "$id" ] || return 0
+  # shellcheck disable=SC2012  # newest-first by mtime; the names are ours
+  ls -t "$RELOAD_DIR/session.$id.md" "$RELOAD_DIR/session.$id."*.md 2>/dev/null | head -n 1
+  return 0
+}
+
+# journal <event> <sid> [detail]: one line, UTC, best-effort, silent on any
+# failure, capped at JOURNAL_LINES (newest kept). This is the "underlying
+# memory taking note": snapshot (PreToolUse on the digest), arm, arm-failed,
+# sidefile, rehydrate, defer. Advisory only — nothing reads it to gate.
+journal() {
+  local ev="${1:-}" sid="${2:-}" detail="${3:-}" ts n
+  ensure_reload_dir 2>/dev/null || return 0
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  printf '%s %s sid=%s pid=%s %s\n' "$ts" "$ev" "$sid" "$(our_pid)" "$detail" >> "$JOURNAL" 2>/dev/null || return 0
+  # BSD `wc` PADS its output ("       3"); GNU does not. Strip before the
+  # numeric test, or the regex never matches on macOS and the cap NEVER FIRES
+  # — silent, and invisible to a Linux-only CI (measured: 261 lines after a
+  # journal() that should have capped at 200). Same `tr -d` the caller in
+  # sessionstart-hook.sh already uses on its own `wc -l`.
+  n="$(wc -l < "$JOURNAL" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt "$JOURNAL_LINES" ]; then
+    tail -n "$JOURNAL_LINES" "$JOURNAL" > "$JOURNAL.tmp.$$" 2>/dev/null && mv "$JOURNAL.tmp.$$" "$JOURNAL" 2>/dev/null
+    rm -f "$JOURNAL.tmp.$$" 2>/dev/null
+  fi
+  return 0
+}
+# The most recent journal line for <event>, or nothing.
+journal_last() { [ -f "$JOURNAL" ] || return 0; grep -E "^[^ ]+ ${1:-x} " "$JOURNAL" 2>/dev/null | tail -n 1; return 0; }
+
+# --- per-session model stamp (F04) ---
+#
+# .reload/model keeps the legacy pair (`model:`/`window:` = the LAST stamp, for
+# readers with no session id) AND one `session: <sid> <model> <window>` line
+# per session, newest last, capped. Two live sessions in one directory used to
+# share the pair: B's startup restamped it with B's model, and A's next Stop
+# (which refreshes from the transcript's BARE id) then "corrected" A to that
+# id's 200K table window — stripping the [1m] shield of invariant 5 or a
+# proxy-resolved window, and nagging at ~9% real occupancy (measured). A's
+# Stop now reads A's own line, which B never touches.
+STAMP_LINES=16
+stamp_model() { # stamp_model <sid> <model> <window>
+  local sid="${1:-}" model="${2:-}" win="${3:-}" tmp="$MODELFILE.tmp.$$"
+  ensure_reload_dir
+  {
+    printf 'model: %s\nwindow: %s\n' "$model" "$win"
+    [ -f "$MODELFILE" ] && awk -v s="$sid" '$1=="session:" && $2!=s' "$MODELFILE" 2>/dev/null | tail -n $((STAMP_LINES - 1))
+    [ -n "$sid" ] && printf 'session: %s %s %s\n' "$sid" "$model" "$win"
+  } > "$tmp" 2>/dev/null && mv "$tmp" "$MODELFILE" 2>/dev/null && return 0
+  rm -f "$tmp" 2>/dev/null
+  printf 'model: %s\nwindow: %s\n' "$model" "$win" > "$MODELFILE" 2>/dev/null   # last resort: the pre-0.5 shape
+  return 0
+}
+# stamped <sid> model|window: this session's line first, the legacy pair else.
+stamped() {
+  local sid="${1:-}" field="${2:-}" v=""
+  if [ -n "$sid" ] && [ -f "$MODELFILE" ]; then
+    case "$field" in
+      model)  v="$(awk -v s="$sid" '$1=="session:" && $2==s {v=$3} END{print v}' "$MODELFILE" 2>/dev/null)" ;;
+      window) v="$(awk -v s="$sid" '$1=="session:" && $2==s {v=$4} END{print v}' "$MODELFILE" 2>/dev/null)" ;;
+    esac
+  fi
+  [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  kv "$field" "$MODELFILE"
 }
 
 # True when a cc-repete loop is active in this project -> cc-reload stands down.
@@ -92,7 +263,7 @@ kv() {
 }
 cfg() { kv "$1" "$CONFIG"; }
 
-# --- concurrent-session ownership (see docs/spec/concurrent-sessions.md §4.2) ---
+# --- concurrent-session ownership (see docs/concurrent-sessions.md) ---
 #
 # Identity lives IN the artifact, never in a shared marker beside it: a
 # directory-global owner file is overwritten by whichever session starts last,
@@ -283,10 +454,10 @@ head_drift() {
 # portable stat idiom as claim-digest.sh (BSD `-f %m` vs GNU `-c %Y`; see the
 # comment there for why `-f` cannot be probed first). Silent on anything
 # unreadable — never a guessed age.
-digest_age_days() {
-  local threshold="${1:-1}" mtime now days
-  [ -f "$DIGEST" ] || return 0
-  mtime="$(stat -c %Y "$DIGEST" 2>/dev/null || stat -f %m "$DIGEST" 2>/dev/null)"
+digest_age_days() { # digest_age_days [threshold-days] [file]  (file defaults to the digest)
+  local threshold="${1:-1}" file="${2:-$DIGEST}" mtime now days
+  [ -f "$file" ] || return 0
+  mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null)"
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 0
   now="$(date +%s 2>/dev/null)"
   [[ "$now" =~ ^[0-9]+$ ]] || return 0

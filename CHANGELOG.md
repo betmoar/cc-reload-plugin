@@ -4,6 +4,92 @@ All notable changes to cc-reload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-17
+
+Two live Claude Code sessions in one directory no longer take each other's reload. A principal
+architect audit (14 findings, F01–F14, all traced or reproduced against the real hooks) found
+that the arm was a single unowned slot: whichever session started or `/clear`'d next consumed it,
+whoever had set it — a second session opened in the same tree silently stole the first one's
+reload, and the first session's `/clear` then rehydrated nothing. Ownership now keys on the
+PROCESS, which `/clear` keeps, and the "underlying memory" takes note of every snapshot in a
+journal. Documentation is restructured: a short README plus three `docs/` pages. 607 → 761 shell
+checks plus 13 node (counted on macOS; a Linux container runs a few fewer — the root-only cases in
+`test-claim-digest.sh` skip themselves, so compare a count against the same platform's previous
+run, never across the two).
+
+### Added
+- **Per-lineage arms** (invariant 21; F01/F02/F12). `scripts/arm-reload.sh` and the `Stop`/
+  `PreCompact` hooks write `.reload/pending.<pid>` (session id + `pid:` line) using `CLAUDE_PID`,
+  the Claude Code process id exported to hooks and to the Bash tool (measured on 2.1.274 with a
+  real SessionStart hook; undocumented, so every consumer fails open to the pre-0.5 single slot
+  when it is absent). `SessionStart` consumes its own process's arm, the pid-less legacy arm and
+  any orphan whose process has exited — the quit-and-restart case — and leaves an arm set by
+  **another live session** untouched with a one-line notice (`🔒 … left in place — this session
+  starts fresh. /reload pulls that digest in on purpose`). A hook's `$PPID` is a throwaway `sh -c`
+  wrapper (measured), so it is deliberately not a fallback.
+- **Each lineage gets its own thread back.** When `session.md` is owned by the other session, the
+  rehydrate resolves the arm's session id to the side-file `claim-digest.sh` kept
+  (`session.<id>.md`, newest copy) and injects that, leaving `session.md` unclaimed; two live
+  sessions ping-pong the slot with nothing lost. Without a side-file the pre-0.5 behaviour
+  (rehydrate `session.md`, warn "different session") still applies (invariant 3).
+- **`.reload/journal`** (F11): append-only, hook-written, capped at 200 lines — `snapshot` (every
+  `Write`/`Edit` of the digest), `arm`, `arm-failed`, `sidefile`, `rehydrate`, `defer`, with UTC
+  time, session id and pid. `/reload` shows its tail. Advisory: nothing gates on it.
+- **Owned handshake marker** (invariant 22; F03). `summarizing` carries sid + pid: another live
+  session's Stop neither completes nor overwrites it (its own over-budget turn takes the notify
+  path), and another session's startup does not purge it. Orphaned markers are purged and consumed
+  as before.
+- **Per-session model stamp** (F04). `.reload/model` keeps the legacy `model:`/`window:` pair and
+  adds one `session: <sid> <model> <window>` line per session (capped at 16). The Stop hook and the
+  status line read their own session's line first, so another session's startup can no longer move
+  this session's window — measured pre-fix: a `[1m]` session nagged at "45%" while at 9% real
+  occupancy after a second session started on a different model.
+- **Hook-output cap warning** (F05; closes backlog #6). Claude Code caps every hook output string
+  at 10,000 characters and replaces a longer one with a preview plus a file path. The digest is
+  still injected in full, and the banner now warns when it is over the cap and points at `/reload`.
+- **`fork` in the SessionStart matcher** (F07): a documented source since Claude Code 2.1.214,
+  treated like `resume` (no marker purge).
+- **`docs/`**: `how-it-works.md` (the cycle, occupancy measurement, windows, caveats),
+  `concurrent-sessions.md` (identities, rules, scenario table, limits), `statusline.md`. The three
+  source comments that cited a `docs/spec/` file that never existed in the repo now point at a
+  page that does (F08).
+- **`tests/test-concurrent.sh`** — 81 checks over the lineage rules, the model stamp, the journal,
+  the cap warning and every fail-open case (no `CLAUDE_PID`, a directory at the slot, a dead pid).
+  53 were red on the unfixed code. e2e cycle 11 chains two live sessions through the real hooks.
+
+### Fixed
+- **The journal cap never fired on macOS** (BSD `wc` pads its count: `wc -l < f` → `"       3"`,
+  GNU does not). `journal()` fed that straight into `[[ "$n" =~ ^[0-9]+$ ]]`, so the test never
+  matched and `.reload/journal` grew without bound — measured at 261 lines after a `journal()`
+  that should have capped at 200. Green through a full GitHub run in the meantime, because CI is
+  Linux-only. Stripped with `tr -d '[:space:]'`, and pinned with a padding `wc` shim on PATH so
+  the case is red on both platforms rather than on whichever one the runner happens to be.
+- **PreCompact's "reload NOT armed" warning was never shown** (F06): Claude Code discards a
+  PreCompact hook's `systemMessage` (hooks reference). The failure is journaled as `arm-failed` and
+  the SessionStart(compact) that follows surfaces it, once.
+- **A foreign arm suppressed this session's own pass 1** in snapshot mode and told it "reload
+  armed — run /clear" about the other session's reload (F12). The gate is now `armed_here`.
+- **`/snapshot` wrote the arm by hand** in command prose, a third writer of a format the hooks own
+  (F10). All three writers are `arm_reload()`; the command calls `scripts/arm-reload.sh`.
+- `write_marker` no longer leaks bash's "Is a directory" to stderr on a failed write (redirection
+  order).
+
+### Changed
+- **README rewritten** (F09): 303 → 126 lines. What it does, install, a sixty-second tour, the
+  commands, the hooks, two sessions in one directory, configuration (the three-line example is
+  unchanged — a test reads it), limitations, layout. Everything deeper moved to `docs/`.
+- CLAUDE.md: invariants 21–23, the lineage decision and its rejected alternatives, new coupling
+  rows, a playbook for changing the lineage rules, landmines for the undocumented environment
+  variables, and a refreshed backlog (item 1 closed: the hooks reference states `compact` fires for
+  auto and manual compaction; item 6 closed by the cap warning).
+- Every pre-existing suite scrubs `CLAUDE_PID` (like `ANTHROPIC_BASE_URL`): run from inside a
+  Claude Code session, the hooks would otherwise write `pending.<pid>` where the fixtures expect
+  `pending` and the suites went red on an untouched tree while CI stayed green.
+- `claim-digest.sh`'s warning says the incumbent gets its thread back on its own `/clear` and
+  points at `docs/concurrent-sessions.md`.
+- e2e cycle 7's "incoherent arm" pair now asserts the side-file resolution (A's arm rehydrates A's
+  side-filed thread, no warning); the no-side-file fallback is pinned in `test-concurrent.sh`.
+
 ## [0.4.2] - 2026-09-09
 
 The digest — the payload the whole plugin exists to carry — had never been improved on its own

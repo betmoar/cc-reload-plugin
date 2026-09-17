@@ -50,7 +50,10 @@ fi
 # readable: disabling the budget (context_budget_pct: 0) or an unreadable
 # transcript mid-snapshot must never strand the marker or leave the reload
 # un-armed. This is the one path that truly always completes.
-if [ -f "$SUMMARIZING" ]; then
+# The marker is OWNED (invariant 22): a handshake another LIVE session opened is
+# not ours to complete — consuming it would arm their digest under our id and
+# strand their pass 2. Ours, pid-less (pre-0.5), or orphaned -> pass 2 as before.
+if [ -f "$SUMMARIZING" ] && ! marker_foreign_live "$SUMMARIZING"; then
   ensure_reload_dir
   # Freshness check BEFORE consuming the marker: the digest is "fresh" only if
   # it was (re)written after pass 1 set the marker. A snapshot turn that never
@@ -60,21 +63,14 @@ if [ -f "$SUMMARIZING" ]; then
   [ -f "$DIGEST" ] && [ "$DIGEST" -nt "$SUMMARIZING" ] && FRESH=1
   rm -f "$SUMMARIZING"
   if [ -f "$DIGEST" ]; then
-    # Stamp the arm's owner when we have one. When we do NOT, fall back to the
-    # literal `touch` rather than writing an empty file: an empty arm must keep
-    # meaning exactly what it means today (a pre-0.3 / un-owned arm), or the
-    # unknown-id case silently becomes the new default and the ownership tests
-    # would be asserting the fallback rather than the feature.
-    if [ -n "$SESSION_ID" ]; then
-      printf '%s' "$SESSION_ID" > "$PENDING" 2>/dev/null || touch "$PENDING" 2>/dev/null
-    else
-      touch "$PENDING" 2>/dev/null
-    fi
-    # Verify the arm the way SessionStart reads it (-f). `printf >` fails and
-    # `touch` "succeeds" on a directory; claiming "reload armed" over an arm
-    # that can never rehydrate is the silent-wrong shape (audit 2026-09-02 F05).
-    if [ ! -f "$PENDING" ]; then
-      jq -n --arg m "⚠️ cc-reload: could not write the arm marker (.reload/pending is not a writable regular file) — reload NOT armed. Remove whatever is at .reload/pending, then run /snapshot before you /clear." \
+    # Arm for THIS lineage (lib.sh arm_reload: sid + pid, verified with -f the
+    # way SessionStart reads it — `printf >` fails and `touch` "succeeds" on a
+    # directory; claiming "reload armed" over an arm that can never rehydrate
+    # is the silent-wrong shape, audit 2026-09-02 F05). An empty SESSION_ID
+    # writes an un-owned arm, which keeps meaning what it always meant.
+    if ! arm_reload "$SESSION_ID"; then
+      ARMP="$(arm_path)"
+      jq -n --arg m "⚠️ cc-reload: could not write the arm marker (${ARMP#"$PROJECT_DIR/"} is not a writable regular file) — reload NOT armed. Remove whatever is there, then run /snapshot before you /clear." \
         '{systemMessage:$m}'
       exit 0
     fi
@@ -206,8 +202,12 @@ fi
 # are covered: a full id (claude-sonnet-4-5, a PREFIX of the live id) and an
 # alias (sonnet, which appears MID-id in claude-sonnet-4-5-…). Hence the
 # leading *"$BASE" rather than an exact prefix match.
+# The stamp is PER SESSION (F04, lib.sh stamp_model/stamped): this session's
+# own line, then the legacy pair. Another session starting in this directory
+# rewrites the pair but never this line, so its model cannot masquerade as a
+# "switch" here and strip the shield below.
 if [ -n "$LIVE_MODEL" ]; then
-  STAMPED_MODEL="$(kv model "$MODELFILE")"
+  STAMPED_MODEL="$(stamped "$SESSION_ID" model)"
   if [ "$LIVE_MODEL" != "$STAMPED_MODEL" ]; then
     RESTAMP=1
     case "$STAMPED_MODEL" in
@@ -219,8 +219,7 @@ if [ -n "$LIVE_MODEL" ]; then
         ;;
     esac
     if [ -n "$RESTAMP" ]; then
-      ensure_reload_dir
-      printf 'model: %s\nwindow: %s\n' "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")" > "$MODELFILE"
+      stamp_model "$SESSION_ID" "$LIVE_MODEL" "$(model_window "$LIVE_MODEL")"
     fi
   fi
 fi
@@ -232,7 +231,7 @@ fi
 # garbage value is treated as absent — so it can't divide by zero below, and (key
 # for the self-heal) it isn't mistaken for a real pin.
 CW="$(cfg context_window)"; { [[ "$CW" =~ ^[0-9]+$ ]] && [ "$CW" -gt 0 ]; } || CW=""
-WINDOW="$CW"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(kv window "$MODELFILE")"
+WINDOW="$CW"; [[ "$WINDOW" =~ ^[0-9]+$ ]] || WINDOW="$(stamped "$SESSION_ID" window)"
 { [[ "$WINDOW" =~ ^[0-9]+$ ]] && [ "$WINDOW" -gt 0 ]; } || WINDOW=1000000
 
 # Auto-correct upward from observed usage (unless a VALID window is pinned): a
@@ -257,12 +256,15 @@ fi
 MODE="$(cfg context_budget_mode)"
 case "$MODE" in snapshot|checkpoint) MODE="snapshot" ;; *) MODE="notify" ;; esac
 
-# The arm gate is `-e`, not `-f`: ANY entry at .reload/pending suppresses a
-# re-block (fail-open). A directory there can never hold an arm, but treating it
-# as "not armed" re-entered pass 1 on every over-budget Stop (audit 2026-09-02
-# F05); SessionStart's rehydrate gate stays `-f` — a non-file arm rehydrates
-# nothing, and pass 2 / PreCompact say so when they cannot write one.
-if [ "$MODE" = "snapshot" ] && [ ! -e "$PENDING" ]; then
+# The arm gate is armed_here (lib.sh): any arm entry THIS lineage would consume
+# suppresses a re-block — `-e`, not `-f`, on the bare slot, so a directory there
+# (which can never hold an arm) still counts (fail-open: treating it as "not
+# armed" re-entered pass 1 on every over-budget Stop, audit 2026-09-02 F05).
+# A FOREIGN LIVE arm does not count (F12): another session's reload is not
+# ours, and "reload armed, run /clear" would have pointed at their thread.
+# SessionStart's rehydrate gate stays `-f` — a non-file arm rehydrates nothing,
+# and pass 2 / PreCompact say so when they cannot write one.
+if [ "$MODE" = "snapshot" ] && ! armed_here; then
   # pass 1: block + re-inject a focused snapshot brief (NOT a continuation of work).
   # If the marker cannot be written (read-only dir, .reload is a file, disk full),
   # do NOT block: pass 2 keys off that marker, so blocking without it would make
@@ -271,8 +273,13 @@ if [ "$MODE" = "snapshot" ] && [ ! -e "$PENDING" ]; then
   # on a directory, which -f then never matches and `rm -f` never removes, so
   # a stray `mkdir .reload/summarizing` blocked EVERY ordinary Stop (measured
   # 3/3; audit 2026-09-02 F05). Invariant 2: never block without the marker.
+  # And never OVERWRITE another live session's handshake (invariant 22): the
+  # marker is one slot, so while theirs is mid-flight we take the notify path.
+  marker_foreign_live "$SUMMARIZING" && MODE="notify"
+fi
+if [ "$MODE" = "snapshot" ] && ! armed_here; then
   ensure_reload_dir
-  { touch "$SUMMARIZING" 2>/dev/null && [ -f "$SUMMARIZING" ]; } || exit 0
+  write_marker "$SUMMARIZING" "$SESSION_ID" || exit 0
   # The heading list below is one of FOUR hand-kept copies (template, this
   # heredoc, precompact-hook.sh's stub, sessionstart-hook.sh's reader). They are
   # pinned to templates/session.md by test-hooks.sh "digest section PARITY" —
@@ -320,7 +327,7 @@ if [ -n "$LASTN" ] && [ "$OCCUPANCY" -lt $(( LASTN + 10 )) ]; then
 fi
 ensure_reload_dir
 printf '%s\n' "$OCCUPANCY" > "$NOTIFIED" 2>/dev/null || exit 0
-if [ -f "$PENDING" ]; then
+if armed_here; then
   MSG="🔔 cc-reload · context ~${OCCUPANCY}% (budget ${PCT}%) — reload armed. Run /clear to reset losslessly; run /snapshot first if you've done more work since the last digest."
 else
   MSG="🔔 cc-reload · context ~${OCCUPANCY}% (budget ${PCT}%) — time to reset: /snapshot then /clear (auto-rehydrates), or /reload-budget <pct|off> to adjust."

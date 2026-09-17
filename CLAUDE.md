@@ -11,19 +11,25 @@ Four bash hooks + three slash commands + one skill that keep a Claude Code sessi
 thread alive across context resets. State machine on disk under the user's project at `.reload/`:
 a digest (`session.md`), a one-shot arm marker (`pending`, now stamped with its arming session
 id when known), a two-pass handshake marker (`summarizing`), a notify ladder (`notified`), a
-model/window stamp (`model`), per-project config (`config`), and — since 0.3 — side-filed digests
-from a detected cross-session collision (`session.<id>.md`). The fourth hook, `PreToolUse`, is a
-same-session enforcement point for that collision guard, not a new continuity mechanism. There is
-no daemon, no state anywhere else, and no network on the per-turn hot path — SessionStart makes one
-optional loopback-only lookup against a local cc-proxy (see the `proxy_window()` decision below),
-fail-open, never repeated per-turn.
+model/window stamp (`model`, one `session:` line per session since 0.5.0), per-project config
+(`config`), side-filed digests from a detected cross-session collision (`session.<id>.md`, since
+0.3), and — since 0.5.0 — per-lineage arms (`pending.<pid>`, keyed on the Claude Code PROCESS id,
+which `/clear` keeps) and an append-only `journal` of every snapshot/arm/side-file/rehydrate. The
+fourth hook, `PreToolUse`, is a same-session enforcement point for the collision guard (and the
+journal's `snapshot` writer), not a new continuity mechanism. There is no daemon, no state anywhere
+else, and no network on the per-turn hot path — SessionStart makes one optional loopback-only
+lookup against a local cc-proxy (see the `proxy_window()` decision below), fail-open, never
+repeated per-turn. User-facing docs: README (short) + `docs/how-it-works.md`,
+`docs/concurrent-sessions.md`, `docs/statusline.md`.
 
 ## Control flow (the whole system)
 
 ```
 Stop hook (every turn end)
-  ├─ summarizing marker present?  → PASS 2: consume marker; if digest exists, arm `pending`
-  │     and VERIFY the arm with -f (not a regular file → "reload NOT armed", never "saved")
+  ├─ summarizing marker present AND not another LIVE process's (invariant 22)?
+  │     → PASS 2: consume marker; if digest exists, arm THIS lineage's slot (lib.sh arm_reload:
+  │     `pending.<CLAUDE_PID>`, else bare `pending`) and VERIFY it with -f
+  │     (not a regular file → "reload NOT armed", never "saved")
   │     (fresh digest → success msg; digest not rewritten this turn → arm anyway, warn honestly;
   │      no digest → do NOT arm, warn)
   │  (occupancy below = the last MAIN-THREAD assistant row of a tail window of the transcript,
@@ -31,28 +37,43 @@ Stop hook (every turn end)
   ├─ stop_hook_active && no marker? → stand down (broken handshake must never re-block = loop)
   ├─ occupancy < budget?          → clear the `notified` ladder, exit silently
   └─ occupancy ≥ budget           → branch on context_budget_mode (default notify):
-        ├─ snapshot mode AND not armed (NO entry at `pending`: -e, not -f — invariant 15)   [legacy `checkpoint` aliases here]
-        │   → PASS 1: write `summarizing` marker and VERIFY it with -f (or refuse to block),
+        ├─ snapshot mode AND not armed_here (no consumable arm entry; a foreign LIVE arm does
+        │   NOT count — F12; a stray directory DOES: -e, invariant 15)   [legacy `checkpoint` aliases here]
+        │   → PASS 1: unless another LIVE process's `summarizing` sits there (then notify instead),
+        │     write `summarizing` (sid + pid) and VERIFY it with -f (or refuse to block),
         │     emit {decision:"block"} re-injecting "write .reload/session.md, then STOP"
-        └─ notify mode, OR snapshot mode already armed
+        └─ notify mode, OR snapshot mode already armed_here
             → laddered nudge: {systemMessage} only — never blocks, zero model tokens.
               Fires on first crossing, then only at last-notified +10 points (`notified`
               stores the %). Ladder unwritable → silent (else it would nag every turn).
 
 PreCompact hook (manual /compact or auto-compaction)
-  └─ arm `pending`; if no digest exists, write a mechanical fallback stub (honest about being thin)
+  └─ arm this lineage's slot (arm_reload); on failure journal `arm-failed` (CC DISCARDS PreCompact's
+     systemMessage — the SessionStart(compact) that follows surfaces it); if no digest exists,
+     write a mechanical fallback stub (honest about being thin)
 
-SessionStart hook (startup|resume|clear|compact)
-  ├─ stamp model id + resolved window to .reload/model (Stop gets no model field — this bridges it)
-  ├─ startup|clear|compact (NOT resume) → purge leaked `summarizing` + `notified`; a handshake
-  │     must not outlive its context (see invariant 10)
-  └─ `pending` present? → inject digest as additionalContext + visible systemMessage banner
-        (WARNS if `pending`'s stamped owner differs from this session's id — never gates on it);
-        consume the marker (one-shot). Not armed → do nothing (a deliberate /clear is respected).
+SessionStart hook (startup|resume|clear|compact|fork)
+  ├─ stamp model id + resolved window to .reload/model, PER SESSION (`session:` line; Stop gets no
+  │     model field — this bridges it; another session's startup never moves this one's window)
+  ├─ startup|clear|compact (NOT resume|fork) → purge `notified`, and `summarizing` unless it is
+  │     another LIVE process's (invariant 22); a handshake must not outlive its context (invariant 10)
+  ├─ arms_here (own `pending.<pid>` first, then bare `pending` + ORPHANS whose pid is dead, newest
+  │     first; a foreign LIVE arm is NEVER listed) empty?
+  │     ├─ foreign live arm(s) exist → 🔒 notice "left in place, this session starts fresh", journal
+  │     │     `defer`, exit — invariant 21
+  │     ├─ source=compact and the journal's last event is `arm-failed` → surface it once (F06)
+  │     └─ else do nothing (a deliberate /clear is respected)
+  └─ else → resolve the digest: session.md, or, when its owner ≠ the arm's sid and a side-file
+        `session.<armsid>*.md` exists, that side-file (this lineage's OWN thread — no warning);
+        no side-file → session.md + the incoherence WARNING (never gates — invariant 3);
+        consume every listed arm (one-shot); claim session.md (only when it is the source);
+        inject as additionalContext + visible banner; warn above the 10,000-char hook-output cap
+        (F05); journal `rehydrate`
 
 PreToolUse hook (model Write/Edit)
-  └─ path == $DIGEST && tool is Write|Edit && payload has session_id?
-       → claim-digest.sh: foreign + fresh incumbent -> side-file + warn; ALWAYS exit 0 (permit)
+  └─ path == $DIGEST && tool is Write|Edit?
+       → journal `snapshot`; with a session_id → claim-digest.sh: foreign + fresh incumbent ->
+         side-file (journal `sidefile`) + warn; ALWAYS exit 0 (permit)
 ```
 
 Every hook first: **exit 0 if jq is missing** (fail open — sourced `exit` in `lib.sh` exits the
@@ -323,6 +344,70 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
     clean", "a future mtime never reports a negative age", "exactly 1 day old still reports",
     "a rehydrate does NOT renew the collision window", "a JUST-WRITTEN foreign digest is still
     protected".)
+21. **An arm belongs to a PROCESS lineage; a session consumes its own, the pid-less, and the
+    orphaned — never another LIVE process's.** (0.5.0, audit 2026-09-17 F01/F02/F12.) Before this,
+    `pending` was one unowned slot and whichever session started or `/clear`'d next consumed it:
+    a second Claude Code session opened in the same directory took the first one's reload
+    (reproduced), and `/clear` in A injected B's thread. The lineage key is `CLAUDE_PID`, the
+    Claude Code process id it exports to hooks and to the Bash tool (measured on 2.1.274 with a
+    real SessionStart hook; UNDOCUMENTED). It is the one identity that passes invariant 13's
+    question — "which side rotates across a reset?": the session id rotates on EVERY reset, the
+    pid only when the process is gone. A hook's `$PPID` is a throwaway `sh -c` wrapper (measured:
+    PPID=sh, CLAUDE_PID=claude) and is deliberately not a fallback: absent `CLAUDE_PID`, the arm is
+    pid-less and every rule degrades to the pre-0.5 single slot (fail-open, F14). Liveness is
+    `kill -0`; a dead owner is an ORPHAN and is consumed (the quit-and-restart case), and every
+    orphan is removed on consumption so a dead session never leaves a one-shot behind for a later
+    deliberate `/clear`. The rehydrate reader tests `-f` (invariant 15); the pass-1 gate
+    `armed_here` also counts a stray directory at the bare or own slot (`-e`, fail-open) but never a
+    foreign live arm. Each lineage gets ITS thread back: the arm's sid resolves to the side-file
+    `claim-digest.sh` kept when `session.md` is owned by someone else; without a side-file the
+    pre-0.5 path applies (rehydrate + warn). Do NOT re-key this on the session id, the transcript
+    mtime (a session idle at a prompt writes nothing), or a SessionEnd hook (does not fire on a
+    kill; a stale marker would then defer forever). (Tests: "with CLAUDE_PID the arm lands at
+    pending.<pid>", "without CLAUDE_PID the arm is the legacy bare pending (F14 fail-open)", "A's
+    arm survives B's startup", "A's /clear (new sid, same process) rehydrates A's thread", "B's arm
+    survives A's /clear", "orphan arm rehydrates", "own thread wins", "orphan consumed too (dead
+    sessions leave no one-shot behind)", "foreign live arm untouched", "bare pending rehydrates",
+    "A's /clear injects A's side-filed thread", "no side-file -> falls back to session.md
+    (invariant 3)", "B blocks for its own snapshot despite A's arm", "own arm suppresses the
+    re-block"; e2e cycle 11.)
+22. **The handshake marker is owned the same way, and the per-session model stamp is what keeps
+    invariant 5 true with two sessions.** (0.5.0, F03/F04.) `summarizing` carries sid + pid: pass 2
+    runs only on a marker that is ours, pid-less or orphaned; pass 1 refuses to OVERWRITE another
+    live process's marker (it takes the notify path instead — one slot, and clobbering it strands
+    their digest un-armed); startup hygiene purges an orphaned marker but keeps a foreign live one.
+    `.reload/model` keeps the legacy `model:`/`window:` pair (= the last stamp) AND one
+    `session: <sid> <model> <window>` line per session, capped at 16 (`stamp_model`/`stamped` in
+    `lib.sh`, atomic temp+mv); the Stop hook and the statusline read their OWN session's line
+    first. Measured pre-fix: A on `sonnet[1m]` was nagged at "45%" while at 9% real occupancy the
+    moment B started on opus, because B's startup restamped the shared pair and A's Stop then
+    "corrected" itself to the bare id's 200K. Every reader of `.reload/model` with a session id in
+    hand must go through `stamped()` (hooks) or the awk lookup in `statusline.sh`, never a bare
+    `window:` grep — that grep is the FALLBACK. (Tests: "B's Stop does not run pass 2 on A's
+    handshake", "B over budget will not overwrite A's live handshake: no block", "startup keeps a
+    foreign LIVE handshake", "startup purges an orphaned handshake", "the owner's Stop completes
+    pass 2", "both sessions have a stamp line", "A keeps its [1m] shield after B started: 9% is
+    silent", "a real family switch restamps A's own line only", "session lines are capped (no
+    unbounded growth across /clear)", "statusline reads ITS session's window, not the last stamp".)
+23. **The journal is advisory and append-only; the arm has ONE writer; the 10,000-char hook-output
+    cap is warned about, never truncated around.** (0.5.0, F05/F06/F10/F11.) `.reload/journal`
+    records `snapshot` (PreToolUse on the digest — BEFORE the session-id gate, so an un-owned
+    snapshot is still noted), `arm`, `arm-failed`, `sidefile`, `rehydrate`, `defer`, `reported`,
+    each with UTC time, sid and pid, capped at 200 lines (newest kept). Nothing gates on it; it is
+    what `/reload` shows and what SessionStart(compact) reads to surface a failed PreCompact arm
+    (Claude Code DISCARDS PreCompact's own systemMessage — docs). The arm is written by
+    `arm_reload()` only: the hooks call it directly, `/snapshot` through `scripts/arm-reload.sh`
+    (which opts out of the jq guard with `CC_RELOAD_NO_JQ_OK=1` because it needs no jq and must
+    not skip the arm silently). A command that writes `.reload/pending*` by hand produces a
+    pid-less arm and reverts that session to the single slot — `tests/test-release.sh` greps for
+    it. Claude Code caps every hook output string at 10,000 chars and replaces a longer one with a
+    preview + path: SessionStart injects the digest in FULL anyway and prefixes the banner with a
+    warning above 9,500 chars — a silent cut would be worse than the cap. (Tests: "a Write to the
+    digest is journaled as a snapshot", "events are in order: snapshot, arm, rehydrate", "the
+    journal is capped at 200 lines", "PreCompact journals the failure", "SessionStart(compact)
+    surfaces it (PreCompact's own systemMessage is discarded by Claude Code)", "reported once, not
+    on every compaction after", "the full digest is still injected (no silent cut)", "the banner
+    warns about the 10,000-char cap", "no command writes .reload/pending by hand".)
 
 ## Non-obvious decisions and rejected alternatives
 
@@ -371,6 +456,24 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
   (cc-proxy only routes non-Claude traffic and never publishes a window for `claude-*`, so those ids
   always fall through to the table — this is what keeps the F05 `[1m]` guard, invariant 5, intact
   with the proxy reachable).
+- **Why key session ownership on the PROCESS id (0.5.0) — and not on the session id, a
+  SessionEnd hook, transcript mtime, or Claude Code's session registry?** The session id rotates on
+  every `/clear`, so any "is this mine?" by session id is false on the primary path (invariant 3,
+  the v0.1.5 bug). The process id is stable across `/clear` and `/compact` and rotates exactly
+  when the old process is gone, and `kill -0` answers liveness with no dependency. **Rejected:**
+  a SessionEnd hook marking arms as abandoned — it does not fire on a kill or a crash, so a stale
+  marker would defer every later rehydrate forever, and its output channel is discarded anyway;
+  transcript mtime as liveness — a session idle at its prompt writes nothing, so a live session
+  looks dead after any pause and its arm is stolen again; `~/.claude/sessions/<pid>.json` (a
+  per-pid registry with `sessionId`, `cwd`, `status`, seen on 2.1.274) — undocumented AND
+  version-specific, where `CLAUDE_PID` + `kill -0` is undocumented but generic; noted in the
+  backlog as a refinement for the pid-reuse edge, never as the primary oracle. **Also rejected:**
+  a single owned `pending` slot with deferral (B's own `/snapshot` would still overwrite A's arm —
+  the user's scenario needs both to keep theirs, hence `pending.<pid>`), and a per-session digest
+  file (`session.<sid>.md` as the primary slot) — it would rotate the payload's NAME on every
+  `/clear`, break `/reload`, the PreToolUse path match and every reader of `$DIGEST`; the existing
+  side-file mechanism already preserves the displaced thread, so the arm only needs to RESOLVE to
+  it.
 - **Why is notify the default mode (v0.1.9)?** A forced snapshot turn costs ~1–3K model tokens
   and interrupts flow; users who found it invasive disabled the budget entirely (pct 0) and lost
   the safety net — the invasive default undermined the plugin's own purpose. A systemMessage nudge
@@ -420,7 +523,11 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
 | `/snapshot --check` (`commands/snapshot.md`) | `tests/test-context-block.sh` "== /snapshot --check ==" block, README "Commands". It is an AUDIT: never writes, never arms, and the subagent gets the digest ALONE — leak this session's context into that prompt and it passes by cheating, which makes the whole path theatre. Always pass an explicit subagent model. No CI fixture suite: a live subagent is not deterministic, so what is pinned is the command CONTRACT, not the audit's verdict |
 | `repete_active()` (`hooks/lib.sh`) — a cross-REPO contract | cc-repete is the producer and its reader is canonical (its CLAUDE.md "what a loop publishes", betmoar/cc-repete-plugin#27): first `---` block, `active` key, one quote layer + CR tolerance, torn write = frontmatter-to-EOF. This repo's eight consumer-side cases in `tests/test-claim-digest.sh` go red if either side moves — update the two repos together, never "fix" a divergence by loosening this reader back to a whole-file grep (invariant 17). Also: README hook preamble, SKILL.md coexistence note, both command files' stand-down step |
 | `pretooluse-hook.sh` or its `hooks.json` entry | plugin must not ALSO declare hooks in `plugin.json`; `tests/test-claim-digest.sh` |
-| `PENDING` being a stamped file rather than a `touch` | `stop-hook.sh:69`, `precompact-hook.sh:24`, `sessionstart-hook.sh` arm-owner block, both test files (these two citations are checked by `tests/test-release.sh`: the cited line must contain `PENDING`) |
+| `PENDING` being a stamped file rather than a `touch` | the ONE writer is `arm_reload()` → `write_marker()` in `hooks/lib.sh`; the slot is chosen at `lib.sh:86` (`arm_path`) and enumerated at `lib.sh:104` (`arms_here`); `sessionstart-hook.sh` arm block; `tests/test-concurrent.sh`, `tests/test-hooks.sh`, `tests/test-e2e.sh` (these two citations are checked by `tests/test-release.sh`: the cited line must contain `PENDING`) |
+| The lineage helpers (`our_pid`, `marker_*`, `arm_*`, `arms_here`, `armed_here`, `sidefile_for` in `hooks/lib.sh`) | `sessionstart-hook.sh` (consume/defer/resolve), `stop-hook.sh` (pass-2 ownership, pass-1 gate, notify wording), `precompact-hook.sh`, `scripts/arm-reload.sh`, `commands/snapshot.md` step 5, `docs/concurrent-sessions.md` (the rules table MUST match), README "Two sessions", invariants 21–23, `tests/test-concurrent.sh`, e2e cycle 11. Every pre-existing suite exports `CLAUDE_PID=""` — a hook run under a real Claude Code session inherits the pid and writes `pending.<pid>` where those fixtures expect `pending` |
+| `.reload/model` format (`session:` lines + legacy pair) | `stamp_model`/`stamped` (`lib.sh`), `stop-hook.sh` restamp block, `scripts/statusline.sh` awk lookup, `tests/test-config.sh` "the FIFTH strip" (legacy pair), `tests/test-concurrent.sh` "F04" block, `docs/how-it-works.md` "How occupancy is measured" |
+| `journal()` events or format | `docs/concurrent-sessions.md` (the example block), `commands/reload.md` step 4, `sessionstart-hook.sh` (`arm-failed` surfacing matches the EVENT field of the last line — a detail string containing the word must not match), `tests/test-concurrent.sh` "F11" + e2e 11.18 (the exact event sequence) |
+| `docs/*.md` pages | `tests/test-release.sh` requires every `docs/…md` path cited in hooks/, scripts/, commands/, skills/, README and this file to exist, every README link to resolve, and README to stay under 200 lines |
 | `context_owner_window` semantics (default 14400, 0=off) | `lib.sh` `owner_window()`, `scripts/reload-config.sh`, `commands/reload-budget.md`, README, `tests/test-config.sh`. It shares ONE signal — the digest's mtime — with `digest_age_days()`, so a change to what writes or preserves that mtime moves BOTH: see invariant 20's last paragraph before touching `claim_digest` |
 | The transcript scan (`TURN_SCAN_JQ`, `WINDOW_LINES` in `stop-hook.sh`) | ONE program, TWO reads (window, then full-file fallback) — keep it one definition. The main-thread filter, the per-line mode and the window are each pinned separately (invariant 14's tests); the `jq` shim test breaks if jq is ever handed the transcript PATH on the window path or a slurp flag anywhere. Re-measure by hand on a ≥50MB transcript after touching it (numbers in invariant 14) — never add a wall-clock assertion |
 | Any config-file reader (`lib.sh` `kv()`, `reload-config.sh get`, the three inline greps in `statusline.sh`) | the other FOUR copies — same strip order: comment, trailing whitespace, one layer of quotes. `tests/test-config.sh` "reader PARITY" runs one fixture set through the three that read `.reload/config`; the `.reload/model` grep reads a different file and is pinned by "the FIFTH strip" instead. README "Configuration" states comments are allowed (the example block is a test fixture: `tests/test-hooks.sh` reads the three `context_*` lines under README "Configuration" literally — matched by CONTENT, not line number — so reformatting them breaks the "README still carries the three-line example" case on purpose) |
@@ -446,7 +553,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
   changes nothing under `-R`), and the cc-operator audit found ten. When you add a guard, mutate
   the code it guards on a scratch copy and confirm the case goes red.
 - **Keep hooks dependency-free**: bash + jq + coreutils only. `touch -t` not `touch -d`
-  (BSD/macOS), literal ESC byte not `\x1b` in sed (BSD), no GNU-only flags.
+  (BSD/macOS), literal ESC byte not `\x1b` in sed (BSD), no GNU-only flags. **Coreutils being
+  present is not coreutils agreeing**: BSD `wc` PADS its count (`wc -l < f` → `"       3"`), GNU
+  does not. Any `wc` output that reaches a `=~ ^[0-9]+$` test, a string compare or a message needs
+  `| tr -d '[:space:]'`; arithmetic (`$(( … / 4 ))`) strips it already and is safe. This shipped
+  as a real bug in 0.5.0: `journal()`'s cap never fired on macOS and `.reload/journal` grew
+  without bound (measured: 261 lines after a `journal()` that should have capped at 200).
 - **New model id shipped?** Add a boundary-anchored case to `model_window()` + two tests (the id,
   and the nearest colliding future id). Users can always pin `context_window` meanwhile.
 - **Never make the Stop hook slower than ~1s** on a large transcript — it runs on every turn end.
@@ -486,6 +598,24 @@ Guarantees: readers test `-f`; writers verify `-f`; `startup|clear|compact` purg
 not per-session). Never: gate a block on a marker you did not verify; gate rehydration on an id
 comparison (invariant 3). Verify: a `test-hooks.sh` case with a DIRECTORY at the marker's path.
 
+**Changing the lineage rules (arms, the handshake marker, liveness).**
+Guarantees: a session never consumes another LIVE process's arm; its own `/clear` always gets its
+own thread; absent `CLAUDE_PID` everything is the pre-0.5 single slot.
+Before you touch it: read invariants 21–23 and `docs/concurrent-sessions.md`; run
+`bash tests/test-concurrent.sh` and read cycle 11 in `tests/test-e2e.sh`.
+To add a marker that must be owned: write it with `write_marker`, read its owner with
+`marker_sid`/`marker_pid`, gate on `marker_foreign_live`, decide its purge rule in
+`sessionstart-hook.sh`'s hygiene case, and add the directory-at-the-path case (invariant 15).
+To change what "alive" means: change `pid_alive` ONLY, and add a case for each direction
+(a live foreign pid via a background `sleep`, a dead one via a pid beyond pid_max).
+Never: compare against the incoming session id (invariant 3); fall back to `$PPID` (it is `sh`);
+list a foreign live arm from `arms_here`; delete a side-file automatically; read the journal to
+gate anything. The trap: the pre-existing suites inherit `CLAUDE_PID` from the Claude Code session
+running them — keep their `export CLAUDE_PID=""` and set the pid per call only in
+`test-concurrent.sh`. Verify: `bash tests/run-all.sh` green, then the two-session drill by hand:
+two terminals in one directory, `/snapshot` in A, start B (expect the 🔒 notice), `/clear` in A
+(expect A's banner).
+
 **Releasing.**
 1. `bash tests/run-all.sh` green. 2. Bump `.claude-plugin/plugin.json`, add `## [x.y.z] - date`
 newest in CHANGELOG.md WITH a body, set the README `Status: **vx.y.z.**` line — same commit
@@ -502,7 +632,21 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
 ## Known landmines
 
 - `lib.sh` is **sourced**, and its `exit 0` (missing jq) intentionally exits the *calling hook*.
-  Don't "fix" that into a `return`.
+  Don't "fix" that into a `return`. The ONLY opt-out is `CC_RELOAD_NO_JQ_OK=1`, set by
+  `scripts/arm-reload.sh` because it needs no jq and must not skip the arm silently; no hook sets it.
+- **`CLAUDE_PID` and `CLAUDE_CODE_SESSION_ID` are undocumented** (the hooks reference lists neither;
+  both measured present on 2.1.274, the pid in a real hook's env via a nested `claude -p` probe).
+  Treat them like the transcript `usage` schema: best-effort, every consumer fail-open. If a
+  release drops `CLAUDE_PID`, arms become pid-less and two sessions share one slot again — loudly
+  documented, silently degraded. A hook's `$PPID` is the `sh -c` wrapper, never the claude process.
+- **Run the suites from inside Claude Code and they inherit `CLAUDE_PID`.** Every pre-existing suite
+  exports it empty at the top for that reason (the same trap `ANTHROPIC_BASE_URL` set in 0.3.3);
+  `test-concurrent.sh` sets it per call. A new suite that runs a hook must do one or the other.
+- **Claude Code caps hook output strings at 10,000 chars** and swaps a longer one for a preview +
+  path. The rehydrate injects the whole digest regardless and warns above 9,500. Do not truncate.
+- **PreCompact's `systemMessage` is discarded by Claude Code** (so is PostCompact's and
+  SessionEnd's). A warning that must reach the user from a compaction goes through the journal and
+  the SessionStart(compact) that follows.
 - The markers under `.reload/` are **per-project, not per-session**. As of 0.3 the two that can
   cause real harm are *detected*: a foreign live digest is side-filed with a warning, and a
   foreign arm rehydrates with a warning (never suppressed — invariant 3 still holds; the
@@ -523,6 +667,14 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
 - **`tail -n` is a SUFFIX, and that is what makes the window correct.** Any main-thread row the
   window contains is necessarily the file's last one, so the window answer equals a full read. A
   `head`, a byte range, or a "middle" sample would not have that property.
+- **CI is Linux-only, so it cannot see a BSD/GNU divergence — and a green CI over a red laptop is
+  the plugin's own silent-wrong shape.** GitHub Actions runs `ubuntu-latest`; a maintainer runs
+  macOS. A case that depends on the ambient tool (`wc` padding, `stat` flags, `date -r`) is green
+  on exactly one of them and the suite reports the platform, not the code. So do not pin such a
+  case on whichever binary the runner ships: **inject the other platform's shape with a shim on
+  PATH** — `tests/test-concurrent.sh` puts a padding `wc` there, the same seam the `jq` and `curl`
+  shims use — and the case then goes red on BOTH. Run the suite locally before believing CI: the
+  0.5.0 `journal()` cap bug was green through a full GitHub run (756 checks) while red on macOS.
 - **The comment strip is in FIVE places, and only THREE of them read `.reload/config`** (`kv()`,
   `reload-config.sh get`, statusline's `context_window:` and `context_budget_pct:` greps — plus
   statusline's `.reload/model` `window:` grep, a different file). They are copies on purpose — the
@@ -534,10 +686,9 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
 
 ## Backlog (prioritized, with context)
 
-1. **Verify `SessionStart source:"compact"` fires on _auto_-compaction** (not just `/compact`) on
-   current Claude Code — determines whether the PreCompact backstop rehydrates automatically. If
-   it doesn't, the arm survives until the next startup/clear, which is acceptable but worth
-   documenting precisely. (Needs a live CC session; can't be unit-tested.)
+1. ~~Verify `SessionStart source:"compact"` fires on auto-compaction~~ **Closed 2026-09-17:** the
+   hooks reference's SessionStart `source` table reads "`compact` | Auto or manual compaction". The
+   backstop rehydrate is automatic. (Docs fact, re-verify on a major CC release.)
 2. **Marker mtime granularity**: the pass-2 freshness check uses `-nt`; on filesystems with 1s
    granularity a digest written in the same second as the marker reads as "not refreshed"
    (arms + warns — degraded but safe). Only matters if users report spurious stale warnings.
@@ -554,14 +705,29 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
    (cc-repete cites 500 trailing sidechain lines as its design margin — an unverified
    bound, not a measured maximum). Done-when: a note here with a version → layout
    table from ≥3 real transcripts.
-6. **The rehydrate injects the WHOLE digest with no size cap** (`sessionstart-hook.sh` `BODY`). The
-   template says ~30 lines and the model usually obeys; a runaway digest would blow the context it
-   exists to save. A silent truncation would be worse than the risk, so the right shape is a
-   `systemMessage` warning above N KB, not a cut. Done-when: a `test-hooks.sh` case with a 200KB
-   digest shows the warning and the full injection.
+6. ~~The rehydrate injects the WHOLE digest with no size cap~~ **Closed in 0.5.0 (F05):** the banner
+   warns above 9,500 chars (Claude Code's cap is 10,000) and the injection stays whole. Pinned by
+   `test-concurrent.sh` "the full digest is still injected (no silent cut)".
 7. **Local runs as root skip the chmod-based unwritable-dir cases** (`test-claim-digest.sh` prints
    SKIP). CI runs them as a normal user. If you develop as root, run that suite under `runuser`/a
    throwaway user before claiming the fail-open cases green.
 8. **`SessionStart` on `resume` consumes an armed digest into a session that still has its context**
    (known, accepted — see landmines). If a "resume keeps context" signal ever appears in the hook
    payload, gate the consume on it and keep the model/window stamp.
+9. **Pid reuse and network filesystems make `kill -0` lie in both directions** (invariant 21's
+   limit). A recycled pid defers a legit restart's rehydrate (recoverable: the 🔒 notice names
+   `/reload`); two machines sharing a directory can consume each other's arms as orphans. Claude
+   Code 2.1.274 keeps `~/.claude/sessions/<pid>.json` (`sessionId`, `cwd`, `status`, `procStart`)
+   — an undocumented registry that could confirm "that pid is a claude for THIS cwd". Done-when:
+   a `pid_alive` refinement that consults the registry when present, with a case per direction,
+   and a measured note here on which CC versions write it.
+10. **Side-files are never cleaned up.** `session.<sid>.md` and `.<mtime>.md` copies accumulate
+    under `.reload/` (git-ignored). A rehydrate from a side-file could offer to remove it; a
+    `/reload --prune` could delete copies older than `context_owner_window`. Done-when: a documented
+    policy in `docs/concurrent-sessions.md` and a test that the newest copy is never removed.
+11. **`notified` is still shared** between sessions (an extra nudge — cosmetic). If it ever matters,
+    key it per lineage like the arm (`notified.<pid>`) and purge orphans in SessionStart hygiene.
+12. **Run the two-session drill on a real Claude Code** (two terminals, one directory) once per
+    minor release and record the CC version here — the whole lineage design rests on `CLAUDE_PID`
+    being exported to hooks, which only a live session can confirm. Last measured: 2.1.274,
+    2026-09-17, via a nested `claude -p` SessionStart probe.

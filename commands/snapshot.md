@@ -49,7 +49,8 @@ A clean check is a real result: say the digest reads cleanly and stop. Otherwise
 2. Check for a concurrent session before overwriting:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/claim-digest.sh" "$CLAUDE_CODE_SESSION_ID"`
    If it prints a warning, relay it verbatim — another session owns the current digest and it has
-   been saved aside. Never skip the write because of this; the incumbent is already preserved.
+   been saved aside (that session gets it back on its own `/clear`). Never skip the write because
+   of this; the incumbent is already preserved.
 3. **Read `.reload/session.md` first if it exists.** This write REPLACES it, so anything you do
    not carry over is lost silently. Carry every still-unresolved **Open question** forward
    verbatim; strike only what is demonstrably resolved.
@@ -71,9 +72,10 @@ A clean check is a real result: say the digest reads cleanly and stop. Otherwise
    For the repo facts, run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/context-block.sh"` and fold its
    output in under *Done this stretch* — it states branch, HEAD, uncommitted paths and recent
    commits from git rather than from recall. It prints nothing outside a repo; that is fine.
-5. Arm the reload, stamping this session as its owner:
-   `printf '%s' "$CLAUDE_CODE_SESSION_ID" > .reload/pending`
-   (if the variable is empty, `touch .reload/pending` instead — an un-owned arm is better than
-   a wrong one).
+5. Arm the reload for this session's lineage (never write `.reload/pending*` by hand — the
+   script records the session id AND the process id, which is what lets a second live session in
+   this directory leave your reload alone):
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/arm-reload.sh" "$CLAUDE_CODE_SESSION_ID"`
+   If it exits non-zero, relay its message verbatim — the reload is NOT armed.
 6. Tell the user in two lines: digest saved, reload armed — run `/clear` (or `/compact`) and the
    session rehydrates automatically; or `/reload` to pull it back manually.

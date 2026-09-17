@@ -44,6 +44,28 @@ for s in $(grep -ohE 'scripts/[a-z-]+\.sh' commands/*.md skills/*/SKILL.md | sor
   ck "command/skill prose names an existing script: $s" '[ -f "$s" ]'
 done
 
+echo "== 0.5.0: documented hook sources, docs/ links, the README stays short, one arm writer =="
+# SessionStart's documented sources (Claude Code hooks reference, 2026-09): a
+# source the matcher omits is a session the plugin never stamps a window for.
+for src in startup resume clear compact fork; do
+  ck "SessionStart matcher covers documented source: $src" 'jq -r ".hooks.SessionStart[0].matcher" hooks/hooks.json | tr "|" "\n" | grep -qx "$src"'
+done
+# Every docs/ path named in code, commands, skills or the README must exist —
+# three source comments cited docs/spec/concurrent-sessions.md for two releases
+# while no docs/ directory existed at all (audit 2026-09-17 F08).
+for d in $(grep -ohE 'docs/[a-z-]+\.md' hooks/*.sh scripts/*.sh commands/*.md skills/*/SKILL.md README.md CLAUDE.md | sort -u); do
+  ck "cited doc exists: $d" '[ -f "$d" ]'
+done
+ck "README links resolve" '[ "$(grep -oE "\]\(([a-zA-Z0-9_./-]+)\)" README.md | sed -E "s/^\]\((.*)\)$/\1/" | grep -vE "^https?://" | while read -r l; do [ -e "$l" ] || echo "$l"; done | wc -l)" -eq 0 ]'
+ck "README stays under 200 lines (the 303-line wall was the complaint that opened 0.5.0)" '[ "$(wc -l < README.md)" -lt 200 ]'
+ck "README still carries the three-line config example a hook test reads" '[ "$(sed -n "/^context_budget_pct: 45       #/,/^context_window: 1000000      #/p" README.md | wc -l)" -eq 3 ]'
+# The arm has ONE writer (lib.sh arm_reload). Command prose must call the
+# script, never `printf > .reload/pending` — a hand-written arm has no pid line
+# and would silently fall back to the single-slot behaviour (F10).
+ck "no command writes .reload/pending by hand" '! grep -qE ">[[:space:]]*\.reload/pending" commands/*.md'
+ck "/snapshot arms through scripts/arm-reload.sh" 'grep -q "scripts/arm-reload.sh" commands/snapshot.md'
+ck "arm-reload.sh is executable" '[ -x scripts/arm-reload.sh ]'
+
 echo "== CI runs tests/run-all.sh (the globbing gate), not a hand-kept list =="
 ck "ci.yml invokes tests/run-all.sh" 'grep -q "bash tests/run-all.sh" .github/workflows/ci.yml'
 ck "ci.yml does not hand-list suites any more" '! grep -qE "bash tests/test-[a-z0-9-]+\.sh" .github/workflows/ci.yml'
