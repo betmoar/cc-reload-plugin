@@ -553,7 +553,12 @@ caller) and **exit 0 if a cc-repete loop is active** (`.repete/loop.local.md` fr
   changes nothing under `-R`), and the cc-operator audit found ten. When you add a guard, mutate
   the code it guards on a scratch copy and confirm the case goes red.
 - **Keep hooks dependency-free**: bash + jq + coreutils only. `touch -t` not `touch -d`
-  (BSD/macOS), literal ESC byte not `\x1b` in sed (BSD), no GNU-only flags.
+  (BSD/macOS), literal ESC byte not `\x1b` in sed (BSD), no GNU-only flags. **Coreutils being
+  present is not coreutils agreeing**: BSD `wc` PADS its count (`wc -l < f` → `"       3"`), GNU
+  does not. Any `wc` output that reaches a `=~ ^[0-9]+$` test, a string compare or a message needs
+  `| tr -d '[:space:]'`; arithmetic (`$(( … / 4 ))`) strips it already and is safe. This shipped
+  as a real bug in 0.5.0: `journal()`'s cap never fired on macOS and `.reload/journal` grew
+  without bound (measured: 261 lines after a `journal()` that should have capped at 200).
 - **New model id shipped?** Add a boundary-anchored case to `model_window()` + two tests (the id,
   and the nearest colliding future id). Users can always pin `context_window` meanwhile.
 - **Never make the Stop hook slower than ~1s** on a large transcript — it runs on every turn end.
@@ -662,6 +667,14 @@ an update nobody receives, and a bump that misses CHANGELOG ships a release with
 - **`tail -n` is a SUFFIX, and that is what makes the window correct.** Any main-thread row the
   window contains is necessarily the file's last one, so the window answer equals a full read. A
   `head`, a byte range, or a "middle" sample would not have that property.
+- **CI is Linux-only, so it cannot see a BSD/GNU divergence — and a green CI over a red laptop is
+  the plugin's own silent-wrong shape.** GitHub Actions runs `ubuntu-latest`; a maintainer runs
+  macOS. A case that depends on the ambient tool (`wc` padding, `stat` flags, `date -r`) is green
+  on exactly one of them and the suite reports the platform, not the code. So do not pin such a
+  case on whichever binary the runner ships: **inject the other platform's shape with a shim on
+  PATH** — `tests/test-concurrent.sh` puts a padding `wc` there, the same seam the `jq` and `curl`
+  shims use — and the case then goes red on BOTH. Run the suite locally before believing CI: the
+  0.5.0 `journal()` cap bug was green through a full GitHub run (756 checks) while red on macOS.
 - **The comment strip is in FIVE places, and only THREE of them read `.reload/config`** (`kv()`,
   `reload-config.sh get`, statusline's `context_window:` and `context_budget_pct:` greps — plus
   statusline's `.reload/model` `window:` grep, a different file). They are copies on purpose — the

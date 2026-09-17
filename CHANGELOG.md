@@ -12,7 +12,10 @@ that the arm was a single unowned slot: whichever session started or `/clear`'d 
 whoever had set it — a second session opened in the same tree silently stole the first one's
 reload, and the first session's `/clear` then rehydrated nothing. Ownership now keys on the
 PROCESS, which `/clear` keeps, and the "underlying memory" takes note of every snapshot in a
-journal. Documentation is restructured: a short README plus three `docs/` pages. 605 → 700 checks.
+journal. Documentation is restructured: a short README plus three `docs/` pages. 607 → 761 shell
+checks plus 13 node (counted on macOS; a Linux container runs a few fewer — the root-only cases in
+`test-claim-digest.sh` skip themselves, so compare a count against the same platform's previous
+run, never across the two).
 
 ### Added
 - **Per-lineage arms** (invariant 21; F01/F02/F12). `scripts/arm-reload.sh` and the `Stop`/
@@ -55,6 +58,12 @@ journal. Documentation is restructured: a short README plus three `docs/` pages.
   53 were red on the unfixed code. e2e cycle 11 chains two live sessions through the real hooks.
 
 ### Fixed
+- **The journal cap never fired on macOS** (BSD `wc` pads its count: `wc -l < f` → `"       3"`,
+  GNU does not). `journal()` fed that straight into `[[ "$n" =~ ^[0-9]+$ ]]`, so the test never
+  matched and `.reload/journal` grew without bound — measured at 261 lines after a `journal()`
+  that should have capped at 200. Green through a full GitHub run in the meantime, because CI is
+  Linux-only. Stripped with `tr -d '[:space:]'`, and pinned with a padding `wc` shim on PATH so
+  the case is red on both platforms rather than on whichever one the runner happens to be.
 - **PreCompact's "reload NOT armed" warning was never shown** (F06): Claude Code discards a
   PreCompact hook's `systemMessage` (hooks reference). The failure is journaled as `arm-failed` and
   the SessionStart(compact) that follows surfaces it, once.

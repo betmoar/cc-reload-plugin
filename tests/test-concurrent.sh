@@ -217,8 +217,40 @@ printf '%s' "{\"session_id\":\"S_B\",\"tool_name\":\"Write\",\"tool_input\":{\"f
 ck "a side-file is journaled" 'grep -q " sidefile sid=S_B " "$TMP/.reload/journal"'
 for i in $(seq 1 260); do printf '2026-01-01T00:00:00Z filler sid= pid= %s\n' "$i"; done > "$TMP/.reload/journal"
 arm "$ME" S_A >/dev/null
-ck "the journal is capped at 200 lines" '[ "$(wc -l < "$TMP/.reload/journal")" -le 200 ]'
+ck "the journal is capped at 200 lines" '[ "$(wc -l < "$TMP/.reload/journal" | tr -d "[:space:]")" -le 200 ]'
 ck "the cap keeps the newest lines" 'tail -n 1 "$TMP/.reload/journal" | grep -q " arm sid=S_A "'
+
+# The cap under a PADDING `wc` — the BSD/macOS output shape, pinned at the seam.
+#
+# `wc -l < file` prints "       3" on BSD and "3" on GNU. journal() feeds that
+# into `[[ "$n" =~ ^[0-9]+$ ]]`, so on a maintainer's macOS the test never
+# matched, the cap NEVER FIRED, and the journal grew without bound — silent,
+# and structurally invisible to CI, which is Linux-only (log 2026-09-17: `wc
+# (GNU coreutils) 9.1`). Measured on the unfixed code: 261 lines after the
+# journal() that should have capped at 200, on macOS green on Linux.
+#
+# A platform-dependent test is not a test, so the padding is INJECTED with a
+# shim on PATH rather than left to whichever `wc` the runner ships. Same seam
+# pattern as the `jq` and `curl` shims elsewhere in this suite. Red on Linux
+# AND macOS before the `tr -d` in journal(); green on both after.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/wc" <<'BSDWC'
+#!/usr/bin/env bash
+# A BSD-shaped wc: pads its count. Delegates to the real one for everything else.
+REAL="$(PATH="${PATH#*:}" command -v wc)"
+if [ "${1:-}" = "-l" ] && [ "$#" -eq 1 ]; then
+  printf '%8d\n' "$("$REAL" -l)"
+else
+  exec "$REAL" "$@"
+fi
+BSDWC
+chmod +x "$TMP/bin/wc"
+ck "the shim really pads (the seam itself is live)" '[ "$(PATH="$TMP/bin:$PATH" bash -c "printf \"a\nb\n\" | wc -l")" != "2" ]'
+for i in $(seq 1 260); do printf '2026-01-01T00:00:00Z filler sid= pid= %s\n' "$i"; done > "$TMP/.reload/journal"
+PATH="$TMP/bin:$PATH" arm "$ME" S_PAD >/dev/null
+ck "the cap fires under a PADDING wc (BSD/macOS shape)" '[ "$(wc -l < "$TMP/.reload/journal" | tr -d "[:space:]")" -le 200 ]'
+ck "and still keeps the newest lines" 'tail -n 1 "$TMP/.reload/journal" | grep -q " arm sid=S_PAD "'
+rm -rf "${TMP:?}/bin"
 
 echo "== F05: a digest over Claude Code's 10,000-char hook-output cap warns, and is still injected in full =="
 reset

@@ -152,7 +152,12 @@ journal() {
   ensure_reload_dir 2>/dev/null || return 0
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   printf '%s %s sid=%s pid=%s %s\n' "$ts" "$ev" "$sid" "$(our_pid)" "$detail" >> "$JOURNAL" 2>/dev/null || return 0
-  n="$(wc -l < "$JOURNAL" 2>/dev/null)"
+  # BSD `wc` PADS its output ("       3"); GNU does not. Strip before the
+  # numeric test, or the regex never matches on macOS and the cap NEVER FIRES
+  # — silent, and invisible to a Linux-only CI (measured: 261 lines after a
+  # journal() that should have capped at 200). Same `tr -d` the caller in
+  # sessionstart-hook.sh already uses on its own `wc -l`.
+  n="$(wc -l < "$JOURNAL" 2>/dev/null | tr -d '[:space:]')"
   if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt "$JOURNAL_LINES" ]; then
     tail -n "$JOURNAL_LINES" "$JOURNAL" > "$JOURNAL.tmp.$$" 2>/dev/null && mv "$JOURNAL.tmp.$$" "$JOURNAL" 2>/dev/null
     rm -f "$JOURNAL.tmp.$$" 2>/dev/null
