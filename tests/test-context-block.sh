@@ -22,6 +22,13 @@
 #
 # Run: bash tests/test-context-block.sh   (exit code = #failures)
 set -uo pipefail
+# CLAUDE_PID is SCRUBBED, not inherited (0.5.0): Claude Code exports its pid to
+# every child, so a suite run from inside a Claude Code session would make the
+# hooks write per-lineage arms (pending.<pid>) where these fixtures expect the
+# bare `pending`, and go red on an untouched tree while CI stays green — the
+# same trap ANTHROPIC_BASE_URL set (tests/test-hooks.sh). The lineage rules
+# have their own suite, tests/test-concurrent.sh, which sets it per call.
+export CLAUDE_PID=""
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CB="$ROOT/scripts/context-block.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -408,7 +415,7 @@ ck "--check dispatches nothing when there is no digest" \
 ck "--check does not apply its own recommendations silently" 'printf "%s" "$CHECK" | grep -qi "silently"'
 # And the ordinary path must still be intact below it — a command file that
 # audits but no longer snapshots would pass every case above.
-ck "the write path still arms with an owned marker" 'grep -q "CLAUDE_CODE_SESSION_ID\" > .reload/pending" "$SNAP"'
+ck "the write path still arms with an owned marker (through the one writer, 0.5.0)" 'grep -q "scripts/arm-reload.sh\" \"\$CLAUDE_CODE_SESSION_ID\"" "$SNAP"'
 ck "the write path still calls the collision guard" 'grep -q "claim-digest.sh" "$SNAP"'
 ck "the write path still names all four sections" '[ "$(grep -c "Done this stretch / In flight / Next concrete step / Open questions & risks" "$SNAP")" -ge 1 ]'
 

@@ -1,195 +1,80 @@
 # cc-reload
 
-**Session continuity across context resets for Claude Code.** When your context fills and you
-`/clear`, `/compact`, or the system auto-compacts, cc-reload snapshots the session's working
-thread to `.reload/session.md` *before* the reset and **auto-rehydrates** it after — so an
-ordinary session doesn't lose its place.
+**Session continuity across context resets for Claude Code.** Before you `/clear`, `/compact`, or
+auto-compaction fires, cc-reload snapshots the session's working thread to `.reload/session.md`.
+After the reset it puts that thread straight back into the fresh context. An ordinary session
+never loses its place.
 
-It is the **non-looped companion to [cc-repete](https://github.com/betmoar/cc-repete-plugin)**.
-cc-repete manages context *inside a mission loop*; cc-reload covers *ordinary sessions*. They are
-complementary by construction: cc-reload **stands down whenever a cc-repete loop is active**, so
-the two never fight.
-
-> Status: **v0.4.2.** The design target is **proactive reset before auto-compaction**:
-> keep manual sessions well under the window (≈45% by default, lower per task) so auto-compact
-> never fires. The Stop-hook budget is the primary path; auto-compaction handling is a backstop.
+> Status: **v0.5.0.** Companion to [cc-repete](https://github.com/betmoar/cc-repete-plugin): cc-repete
+> owns continuity *inside a mission loop*, cc-reload covers *ordinary sessions* and stands down
+> whenever a cc-repete loop is active.
 
 ## Install
-
-This repo is its own plugin marketplace (via the bundled `.claude-plugin/marketplace.json`), so
-you can install it standalone straight from GitHub — no central marketplace required:
 
 ```
 claude plugin marketplace add betmoar/cc-reload-plugin
 claude plugin install cc-reload@cc-reload-plugin
 ```
 
-## How it works — budget → snapshot → arm → rehydrate
+Needs `bash` and `jq`. `git` and `curl` are optional (repo facts in the digest, cc-proxy windows).
 
-1. **Budget (primary)** — the `Stop` hook watches context occupancy. When it crosses
-   `context_budget_pct` (default **45%**), the escalation is set by `context_budget_mode`:
-   - **`notify` (default)** — a one-line nudge: *run `/snapshot` then `/clear`, or
-     `/reload-budget` to adjust*. Never blocks, costs zero model tokens, and is laddered — it
-     fires at the first crossing, then again only when occupancy grows another ~10 points.
-   - **`snapshot`** — the automated snapshot: cc-reload forces a digest-writing turn, arms the
-     reload, and asks you to `/clear`. Once armed it does **not** re-force a snapshot; further
-     over-budget turns get the laddered reminder instead. (The pre-0.2.0 value `checkpoint` is
-     still accepted as an alias.)
-   Tune per task with `/reload-budget <pct>`; switch modes with `/reload-budget notify|snapshot`.
-2. **Snapshot** — `.reload/session.md` holds the working thread (mission / intent / done / in
-   flight / next step / open questions). The budget prompts one; `/snapshot` writes one on demand;
-   the skill keeps it fresh as you work. Each snapshot **replaces** the last, so the digest is
-   written read-first: unresolved open questions are carried forward verbatim, and `mission` — the
-   original ask — is copied across unchanged while `intent` tracks where the work stands now.
-3. **Arm** — a `.reload/pending` marker means "rehydrate on the next reset." Only *armed* resets
-   rehydrate, so a deliberate `/clear` meant to drop context is respected.
-4. **Rehydrate** — the `SessionStart` hook injects the digest after `/clear` or `/compact` and
-   consumes the marker. Automatic — no command. `/reload` does it manually. The banner also
-   reports how stale the digest is: *N commits since this digest* (from the `head:` sha it stamped)
-   and *N days old* (from the file's mtime). Both are advisory — they never block a rehydrate, and
-   both stay silent unless the number is genuinely measurable.
+## Sixty seconds
 
-`git` is a **soft dependency** with three call sites: `scripts/context-block.sh` (branch, HEAD,
-uncommitted paths, recent commits — folded into the digest so the model states repo facts instead
-of recalling them), the commit-drift count above, and the `head:` stamp PreCompact writes. Outside
-a repo, without `git`, in an empty repo or on a broken `.git`, every one of those prints nothing
-and the plugin behaves exactly as it did before. The *N days old* signal is mtime-only, so it keeps
-working with no repo at all.
+1. Work as usual. A status line tells you when context passes the budget (45% of the window
+   by default): `🔔 cc-reload · context ~47% — time to reset: /snapshot then /clear`.
+2. Run `/snapshot`. The digest is written and a reload is **armed**.
+3. Run `/clear`. The next session starts with a banner (`🔄 cc-reload (clear) — <intent> | → <next step>`)
+   and the digest already in its context. Carry on from the next concrete step.
 
-### How occupancy is measured (and its limits)
-
-Claude Code gives hooks **no context-% signal and no model id on `Stop`**. cc-reload bridges this
-and **auto-detects each user's window** — nothing is hardcoded to one setup:
-
-1. `SessionStart` stamps the live `model` + resolved window to `.reload/model` when Claude Code
-   supplies a model id (an **optional** SessionStart field — best-effort). An unrecognized id is
-   assumed to be a large (1M) window.
-2. The `Stop` hook gets **no model id**, so it reads the model from the **last main-thread assistant
-   turn** in the transcript (subagent rows are skipped; a malformed line is skipped, not fatal; only
-   the tail of the file is read unless it has to look further) and re-stamps `.reload/model` if it changed (mid-session `/model` switches are
-   picked up). One exception: the transcript carries the bare API id, never a `[1m]` alias suffix —
-   if the stamp is a `[1m]` form of the *same* model (e.g. `sonnet[1m]` vs `claude-sonnet-4-5-…`),
-   the stamp stands, so a 1M-beta session is never downgraded to its 200K base id. It then reads
-   that turn's input tokens (input + cache) and computes occupancy against
-   the window. If the window is entirely unknown (no stamp yet, no override) it **assumes a large 1M
-   window** — so a 1M session is never nagged before the stamp exists; the trade-off is that a
-   genuinely small un-stamped session snapshots late (PreCompact + auto-compaction still backstop it).
-3. If a *stamped* window is too low for an unrecognized large-context model, it **self-corrects
-   upward from observed usage** (>200K tokens used ⇒ not a 200K window). This only ever lowers
-   occupancy, so it can't cause a premature reset.
-4. `context_window` in `.reload/config` overrides everything — the precise fix for a brand-new
-   model id.
-
-Non-Claude models routed through the [cc-proxy plugin](https://github.com/betmoar/cc-proxy-plugin) (GLM, DeepSeek,
-Qwen, etc.) get their window from cc-proxy itself when it's reachable: `SessionStart` makes one
-loopback-only, 1-second-timeout call to `GET $ANTHROPIC_BASE_URL/v1/models` (only when
-`ANTHROPIC_BASE_URL` resolves to `127.0.0.1`/`localhost`/`::1` — never a remote host) and reads the
-`context_window` field cc-proxy v0.5.1+ publishes for each id it curates. Any failure — proxy down,
-no `curl`, timeout, missing/invalid field — falls back to a hard-coded table:
-`glm-4.5`/`glm-4.5-air` resolve to 128K, `glm-4.6`/`glm-4.7` and `glm-5`/`glm-5-turbo`/`glm-5.1`
-resolve to 200K. `glm-5.2`, the DeepSeek-v4 and Qwen3.x-max/plus tiers, and any OpenRouter-prefixed
-id (`deepseek/deepseek-v4-pro`, `qwen/qwen3.7-max`, etc.) are unrecognized by the table and fall
-through to the optimistic 1M default — pin `context_window` if a proxy model's real window is
-smaller, the proxy is unreachable at session start, and it isn't in this curated fallback set yet.
-
-Caveats: the usage field is **undocumented** (best-effort; if missing, the hook falls back to a
-byte estimate that errs early — safe when the goal is to stay low). Auto-compact's own threshold is
-not disclosed or configurable as a %, which is exactly why cc-reload drives the reset proactively.
+`/compact` and auto-compaction take the same route automatically: a `PreCompact` hook arms the
+reload and guarantees *a* digest exists (a thin mechanical one if you never wrote one).
 
 ## Commands
 
-| Command          | Purpose                                                                  |
-| ---------------- | ------------------------------------------------------------------------ |
-| `/reload-budget` | Set the proactive trigger threshold (% of window) for this project; tune per task |
-| `/snapshot`      | Write `.reload/session.md` now and arm a reload across the next reset     |
-| `/snapshot --check` | Audit the current digest: a fresh subagent reads it *alone* and says what it would do next — divergence from what you know is the digest's defect. Writes nothing |
-| `/reload`        | Manually rehydrate from `.reload/session.md` (5-line sitrep, then resume) |
+| Command | What it does |
+| --- | --- |
+| `/snapshot [note]` | Write `.reload/session.md` (read-first, carries open questions forward) and arm a reload |
+| `/snapshot --check` | Audit the digest: a fresh subagent reads it *alone* and says what it would do next. Writes nothing |
+| `/reload` | Rehydrate by hand: five-line sitrep from the digest, plus the last journal entries |
+| `/reload-budget <pct\|off\|notify\|snapshot>` | Set the trigger threshold or the escalation mode for this project |
 
-## Hooks
+## How it works
 
-| Hook           | Matcher                     | Does                                                                        |
-| -------------- | --------------------------- | --------------------------------------------------------------------------- |
-| `Stop`         | —                           | **primary:** at `context_budget_pct`, nudge a snapshot + `/clear` (`notify`, default) or force the digest turn and arm (`snapshot`) |
-| `SessionStart` | startup\|resume\|clear\|compact | stamp model+window to `.reload/model`; purge stale markers on a real reset; if armed, inject the digest, clear marker |
-| `PreCompact`   | manual\|auto                | **backstop:** arm + ensure a digest exists (mechanical fallback)            |
-| `PreToolUse`   | `Write`\|`Edit`              | Before the model overwrites `.reload/session.md`, side-files a *different* session's recent digest and warns. Never blocks the write. |
+Four hooks, one directory of state (`.reload/`, self-ignored by git), no daemon, no network on the
+per-turn path.
 
-Every hook's first actions: **fail open if `jq` is missing**, and **stand down if a cc-repete loop
-is active** (`.repete/loop.local.md` frontmatter `active: true`, scoped to the first `---` block
-exactly as cc-repete itself reads it — a published contract, cc-repete#27). See `hooks/lib.sh`.
-An active marker that is malformed (e.g. an asymmetric quote) reads as not active — corruption
-must not resurrect a loop its own engine exited.
+| Hook | Role |
+| --- | --- |
+| `Stop` | Measures context occupancy from the transcript every turn. Over budget: nudge (`notify`, default) or force a digest-writing turn (`snapshot` mode) |
+| `PreCompact` | Backstop: arms the reload before any compaction, writes a fallback digest if none exists |
+| `SessionStart` | Rehydrates when a reload is armed for *this* session's lineage. Reports staleness (commits since, days old) |
+| `PreToolUse` | Guards the digest slot: side-files another live session's digest before it is overwritten |
 
-In `snapshot` mode the Stop hook additionally guards its own two-pass handshake: it never blocks
-when `stop_hook_active` is set without the `summarizing` marker (a broken handshake must not
-re-prompt the snapshot forever), never blocks if the marker can't be written, never re-blocks
-while a reload is already armed (`.reload/pending` — so it can't force a snapshot turn every
-other turn until you `/clear`), and reports honestly on pass 2 — a snapshot turn that didn't
-actually refresh `session.md` arms the existing digest as a floor but says so instead of claiming
-"digest saved". SessionStart purges a leaked `summarizing` marker (and the notify ladder) on any
-real reset (`startup|clear|compact`), so an interrupted snapshot can't arm a dead session's
-digest into the next one.
+The digest is ~30 lines: `mission` (the original ask, never rewritten), `intent`, and four
+sections: *Done this stretch / In flight / Next concrete step / Open questions & risks*. Every
+snapshot replaces the last, so it is written read-first.
 
-## Statusline (optional) — context % on the right
+Details, with the measurement caveats: [`docs/how-it-works.md`](docs/how-it-works.md).
 
-Claude Code now hands the statusline a pre-calculated context signal on stdin
-(`context_window.used_percentage` + `context_window_size`, CC ≥ 2.1.132). cc-reload ships a tiny
-segment that turns it into a budget-aware gauge:
+## Two sessions in one directory
 
-```
-ctx[1M] 7%·45
-   │    │   └ this project's reload budget (% of window), from .reload/config (45 default)
-   │    └──── current occupancy (input + cache), colored GREEN/YELLOW/RED relative to the budget
-   └───────── context window size: 1M / 200k
-```
+Since 0.5.0 two live Claude Code sessions can share a working directory without taking each
+other's reload:
 
-It is **read-only** — it does not run the hooks or read the transcript, just renders what Claude
-Code already provides. It prints nothing early in a session or right after `/compact` (no signal
-yet), so the slot stays clean. With the budget disabled (`context_budget_pct: 0`) it drops the
-`·N` suffix and colors on absolute thresholds.
+- A session only consumes an arm set by **its own process** (a `/clear` keeps the process),
+  a pid-less arm, or an **orphan** whose process has exited (the quit-and-restart case).
+- An arm set by **another live session is left in place**, with a one-line notice. The new
+  session starts fresh; `/reload` pulls the other digest in on purpose.
+- When both sessions snapshot, the digest slot is side-filed rather than lost, and each
+  session's `/clear` gets **its own** thread back.
+- `.reload/journal` records every snapshot, arm, side-file and rehydrate with time, session id
+  and process id, so "who snapshotted, and when?" has an answer.
 
-`scripts/statusline.sh` is a native Claude Code statusline renderer — point `statusLine` straight at
-it to show cc-reload's context gauge on its own bar. Use an **absolute** path (the command runs
-outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable):
-
-```json
-"statusLine": {
-  "type": "command",
-  "command": "bash /ABS/PATH/TO/cc-reload/scripts/statusline.sh"
-}
-```
-
-Claude Code allows only **one** `statusLine`, so to show this alongside other segments you need a
-composer in that slot. cc-reload doesn't ship one; it ships the segment manifest
-(`.claude-plugin/statusline.json`) that a composer can read:
-
-```json
-{ "name": "cc-reload", "render": "scripts/statusline.sh", "order": 20 }
-```
-
-A composer discovers every installed plugin that ships such a manifest, fans the session JSON to
-each renderer, and joins the non-empty output — so cc-reload's gauge sits next to other plugins'
-segments with no per-plugin wiring, and an empty/errored segment drops out with no dangling
-separator.
-
-## Coexistence with cc-repete
-
-| | cc-repete | cc-reload |
-|---|---|---|
-| Scope | continuity inside a mission loop | continuity in ordinary sessions |
-| Active when | a loop is running | **no** loop is running |
-| State | `.repete/` | `.reload/` |
-| Commands | `/repete*` | `/reload`, `/snapshot` |
-
-Install both; the stand-down check makes it safe.
+Limits and the exact rules: [`docs/concurrent-sessions.md`](docs/concurrent-sessions.md).
 
 ## Configuration
 
-`.reload/` holds per-session runtime state, not source. The first time cc-reload creates it, it
-drops a self-ignoring `.reload/.gitignore` (a single `*`) so the directory is never committed to
-your project — no change to your own `.gitignore` needed.
-
-`.reload/config` (per project; all optional):
+`.reload/config` (per project, all optional; `/reload-budget` writes it for you):
 
 ```
 context_budget_pct: 45       # act at this % of the window. 0 = off. Default 45.
@@ -197,107 +82,45 @@ context_budget_mode: notify  # notify (default: nudge, never blocks) | snapshot 
 context_window: 1000000      # AUTHORITATIVE window override in tokens. Set this for your main model.
 ```
 
-Trailing `# comments` like the ones above are allowed on any line (every reader strips them);
-`/reload-budget` writes the file for you and never needs them.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `context_budget_pct` | `45` | Trigger threshold as % of the window. `0`/`off` disables the proactive path. Lower it for reasoning-heavy work (`/reload-budget 30`) |
+| `context_budget_mode` | `notify` | `notify`: one laddered status line, zero model tokens. `snapshot`: a forced digest turn, then a request to `/clear` (`checkpoint` still accepted) |
+| `context_window` | auto | Pins the window in tokens and wins over detection. Set it once for your main model |
+| `context_owner_window` | `14400` | Seconds within which another session's digest counts as live and is side-filed before an overwrite. `0`/`off` disables |
 
-- **`context_budget_pct`** — the proactive trigger. Set it low for context-sensitive tasks
-  (`/reload-budget 30`), higher for more work per session. Default **45**.
-- **`context_budget_mode`** — how hard the budget escalates. **`notify`** (default) emits a
-  one-line, escalation-laddered nudge and leaves the reset to you — least invasive, zero model
-  tokens. **`snapshot`** spends a model turn writing the digest automatically and arms the
-  reload — hands-off continuity at the cost of an interruption. Both are per-project;
-  `/reload-budget notify|snapshot` switches. (The legacy value `checkpoint` still works as an
-  alias for `snapshot`.)
-- **`context_window`** — overrides window detection and **always wins**. `SessionStart` tries to
-  detect it from the live model id, but model ids change (e.g. Sonnet 5's 1M window), and a wrong
-  guess would skew the % badly. **Set this once for your main session model** — e.g. `1000000` for
-  a 1M-context model — and the budget is exact regardless of id churn. (Most 200K models are now
-  subagents returning findings; the budget targets the main session's window.)
-- `context_owner_window` — seconds (default `14400` = 4h; `0` or `off` disables). How recently
-  another session must have written `.reload/session.md` for an overwrite to be treated as a live
-  collision worth side-filing.
+Trailing `# comments` are allowed on any line.
+
+## Status line
+
+`scripts/statusline.sh` renders `ctx[1M] 7%·45` (window, occupancy coloured against the budget,
+budget) from Claude Code's own statusline data. Read-only, never touches the transcript. Setup
+and the composer manifest: [`docs/statusline.md`](docs/statusline.md).
+
+## Known limitations
+
+- **Occupancy is best-effort.** The transcript's per-turn `usage` field is undocumented; if it
+  disappears the hook falls back to a byte estimate that errs early.
+- **`CLAUDE_PID` and `CLAUDE_CODE_SESSION_ID` are undocumented** Claude Code variables (measured
+  on 2.1.274). Without them the plugin degrades to a single shared arm and un-owned digests,
+  exactly the pre-0.5 behaviour.
+- **The digest guard covers `Write`/`Edit`.** A digest written through a Bash heredoc bypasses it.
+- **Hook output is capped at 10,000 characters** by Claude Code. A larger digest is injected
+  anyway, and the banner warns that Claude may have received a preview; `/reload` reads the file.
+- **`summarizing`, `notified` and the legacy `model:` pair** remain shared between sessions in one
+  directory. Their collisions are cosmetic (an extra nudge, a deferred snapshot turn).
 
 ## Layout
 
 ```
-cc-reload/
-├── .claude-plugin/plugin.json
-├── .claude-plugin/marketplace.json   # self-embedded marketplace (claude plugin marketplace add)
-├── hooks/{hooks.json, lib.sh, sessionstart-hook.sh, precompact-hook.sh, stop-hook.sh, pretooluse-hook.sh}
-├── .claude-plugin/statusline.json    # statusline segment manifest (for a composer)
-├── scripts/statusline.sh             # statusline segment renderer (native or via composer)
-├── scripts/reload-config.sh          # validated get/set for .reload/config (used by /reload-budget)
-├── scripts/claim-digest.sh           # concurrent-session guard: side-files a foreign+fresh incumbent digest
-├── scripts/context-block.sh          # the free-form git caller: branch/HEAD/dirty/recent commits, silent without git
-├── commands/{reload-budget.md, snapshot.md, reload.md}
-├── skills/maintaining-session-continuity/SKILL.md
-│   └── evals/trigger-eval.json       # triggering benchmark for the skill description
-├── templates/session.md
-├── tests/run-all.sh                  # THE local gate: JSON + bash -n + shellcheck + every tests/test-*.sh (what CI runs)
-├── tests/{test-hooks, test-statusline, test-config, test-e2e, test-claim-digest, test-context-block, test-release}.sh
-├── tests/test-release-gate.mjs    # node suite for scripts/release-gate.mjs (run by release.yml)
-├── .github/workflows/ci.yml       # pinned shellcheck 0.10.0 + `bash tests/run-all.sh`
-├── .github/workflows/release.yml  # tag build: release-gate trio check + run-all + auto release from CHANGELOG
-├── CHANGELOG.md                   # release history (Keep a Changelog)
-├── CLAUDE.md                      # maintainer handoff: architecture, invariants, change guide
-└── LICENSE                        # MIT
+hooks/        hooks.json + lib.sh + the four hook scripts
+scripts/      arm-reload.sh, claim-digest.sh, context-block.sh, reload-config.sh, statusline.sh
+commands/     /snapshot, /reload, /reload-budget
+skills/       maintaining-session-continuity (judgment for using the plugin)
+templates/    session.md — the digest's source of truth
+tests/        run-all.sh is THE gate (what CI runs); one suite per hook/script + e2e + concurrent
+docs/         how-it-works, concurrent-sessions, statusline
+CLAUDE.md     maintainer handoff: invariants, couplings, playbooks
 ```
-
-`.reload/` also holds `.reload/session.<id>.md` — side-filed digests from a foreign-session collision
-(`scripts/claim-digest.sh`), never auto-deleted. `.reload/pending` now holds the arming session's id
-(when known), not just a bare touch.
-
-## Open questions (verify on your Claude Code / model version)
-
-- **Transcript token-usage field is undocumented.** The Stop budget reads the last assistant
-  turn's `message.usage.{input_tokens,cache_read_input_tokens,cache_creation_input_tokens}` from
-  the transcript. It works today but isn't an official schema; if it disappears the hook falls back
-  to a byte estimate. Validate occupancy looks right against `/context` after install.
-- **Sonnet 5's exact model id + default window.** The resolver maps `*sonnet-5*` → 1M, but confirm
-  the real id on launch — or just set `context_window` in `.reload/config` and skip detection.
-- **Does `SessionStart` fire with `source: "compact"` on _auto_-compaction, or only `/compact`?**
-  Determines whether the backstop rehydrate is automatic. (The primary budget path avoids relying
-  on it.)
-- **Hook matcher syntax** for `SessionStart`/`PreCompact` may need adjusting per version; the
-  scripts also branch on the source/type read from stdin as a safety net.
-
-## Known limitations
-
-- **State is per-project, not per-session.** The `pending`, `summarizing`, `notified`, and `model`
-  markers live in one `.reload/` dir per project. Two Claude Code sessions open in the *same* repo at once can
-  step on each other's markers (one arms, another consumes/stamps). There is deliberately **no
-  session-id guard** on rehydrate (removed in v0.1.5: `/clear` mints a fresh session id every time,
-  so an id-equality check suppressed the restore banner on its primary trigger) — the one-shot
-  `.reload/pending` marker is the sole gate. Single-session-per-project use — the common case — is
-  unaffected.
-
-**One session per working directory.** `.reload/` is per-directory, not per-session: a second
-Claude Code session in the same tree shares the same digest and the same arm marker. Run concurrent
-sessions in separate worktrees. Note that Claude Code's `EnterWorktree` creates worktrees under
-`.claude/worktrees/` — a `.gitignore` listing `.worktrees/` will not match that path.
-
-Since 0.3 the plugin detects a cross-session overwrite rather than losing the digest silently, but
-that guard has known limits:
-
-- A digest written without a runtime session id is un-owned and overwritten silently.
-- The guard sits on `Write`/`Edit` — the only built-in tools that can write the digest (Claude
-  Code's `PreToolUse` matches `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Agent`, `WebFetch`,
-  `WebSearch`, `AskUserQuestion`, `ExitPlanMode`, plus MCP tools; `NotebookEdit` takes a
-  `notebook_path` and cannot target the digest). A digest written via a `Bash` heredoc still
-  bypasses it.
-- Recovery is manual — the side-file is never consulted on rehydrate; copy it back yourself.
-- Only `pending` carries an owner. `summarizing`, `notified`, and `model` remain shared.
-- This is a detector, not isolation. Separate worktrees are the actual fix.
-
-It deliberately says nothing on the ordinary path. Because `/clear` mints a fresh session id every
-time, the guard tracks a *lineage* rather than an identity: rehydrating a digest claims it for the
-new session, so a single user resetting a single directory never sees a warning or a side-file. The
-warning fires when the arm and the digest disagree about who wrote them — a state one session
-cannot produce.
-
-See `CLAUDE.md` for the maintainer handoff: architecture map, invariants, and how to change each
-load-bearing path safely.
-
-## License
 
 MIT — see [`LICENSE`](LICENSE).

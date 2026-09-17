@@ -9,9 +9,9 @@
 #
 # EXITS 0 UNCONDITIONALLY. This runs in front of the user's snapshot; a guard
 # that can fail the write it guards is worse than the data loss it prevents
-# (docs/spec/concurrent-sessions.md §4.2.2). cc-operator's equivalent sentinel
-# fails CLOSED because it guards a gate; this one fails OPEN because it guards
-# a convenience. That divergence is deliberate — see spec §4.2.1.
+# (docs/concurrent-sessions.md). cc-operator's equivalent sentinel fails
+# CLOSED because it guards a gate; this one fails OPEN because it guards a
+# convenience. That divergence is deliberate.
 #
 # On "unconditionally": lib.sh is SOURCED and its `command -v jq || exit 0`
 # (lib.sh:24) exits THIS script — with 0, which is the contract, not a violation.
@@ -27,8 +27,8 @@ repete_active && exit 0    # cc-repete owns continuity while a loop is live
 WRITER="${1:-}"
 
 # Nothing to protect, or nothing to compare with: proceed silently. An empty
-# writer id means the runtime gave this path no identity — UNDETECTABLE, which
-# the spec (§4.4 limit 1) states as a known coverage gap rather than hiding.
+# writer id means the runtime gave this path no identity — UNDETECTABLE, a
+# known coverage gap stated in docs/concurrent-sessions.md rather than hidden.
 [ -f "$DIGEST" ] || exit 0
 [ -n "$WRITER" ] || exit 0
 
@@ -95,7 +95,8 @@ fi
 # POSIX within one filesystem, and no lock a fail-open guard could hang on.
 TMP_SIDE="$SIDE.tmp.$$"
 if cp "$DIGEST" "$TMP_SIDE" 2>/dev/null && mv "$TMP_SIDE" "$SIDE" 2>/dev/null; then
-  printf 'cc-reload: .reload/session.md belongs to a different session (%s) and was written %ds ago. Saved it to %s before overwriting. Two sessions are sharing this directory — see README "Known limitations".\n' \
+  journal sidefile "$WRITER" "${SIDE#"$RELOAD_DIR/"} (incumbent $INCUMBENT)"
+  printf 'cc-reload: .reload/session.md belongs to a different session (%s) and was written %ds ago. Saved it to %s before overwriting — that session gets it back on its own /clear. Two sessions are sharing this directory — see docs/concurrent-sessions.md.\n' \
     "$INCUMBENT" "$AGE" "$SIDE"
 else
   rm -f "$TMP_SIDE" 2>/dev/null   # never leave a truncated partial behind

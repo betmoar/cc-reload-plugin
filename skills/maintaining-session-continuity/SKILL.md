@@ -92,6 +92,16 @@ nothing else — to a fresh subagent and asks what it would do next. If that ans
 what you know, the digest is defective, and you find out while you can still fix it. This is the
 only way to test the digest's *content*; everything else tests that it arrives.
 
+## Two sessions in one directory
+
+An arm belongs to the **process** that set it (`/clear` keeps the process), so a second live session
+in the same directory starts fresh and leaves your reload alone; a session that has exited leaves an
+orphan the next start consumes. When both sessions snapshot, the digest slot is side-filed rather
+than lost and each session's `/clear` gets its own thread back. `.reload/journal` records every
+snapshot, arm, side-file and rehydrate; `/reload` shows its tail when you need to know who wrote
+what. Arm through `scripts/arm-reload.sh`, never by writing `.reload/pending*` by hand — the script
+records the identities the rules depend on. Rules and limits: `docs/concurrent-sessions.md`.
+
 ## Coexistence with cc-repete
 
 `.repete/loop.local.md` frontmatter `active: true` (first `---` block, as cc-repete reads it)

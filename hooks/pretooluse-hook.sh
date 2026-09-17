@@ -7,8 +7,8 @@
 # step ("run this first") is skippable by the actor it polices — and its unit
 # tests would pass green over the unguarded live path. This hook is what makes
 # the guard unskippable for the built-in file tools.
-# See docs/spec/concurrent-sessions.md §4.3 (and §4.4 for what it does NOT cover:
-# a digest written via a Bash heredoc bypasses PreToolUse entirely).
+# See docs/concurrent-sessions.md (including what it does NOT cover: a digest
+# written via a Bash heredoc bypasses PreToolUse entirely).
 #
 # ALWAYS exits 0 — permits the write. It must never block a snapshot.
 #
@@ -46,6 +46,11 @@ TOOL="$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_name // ""' 2>/dev/null)" || ex
 case "$TOOL" in Write|Edit) ;; *) exit 0 ;; esac
 
 SID="$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)" || exit 0
+# The snapshot is being taken: the one moment a hook sees the digest written.
+# Take note (journal, F11) BEFORE the identity gate below — a snapshot with no
+# runtime id is still a snapshot, and "when was it last taken" is what the
+# journal answers.
+journal snapshot "$SID" "$TOOL"
 [ -n "$SID" ] || exit 0    # no runtime identity on this path -> undetectable
 
 # Path via $0, NOT the plugin-root env var hooks.json exports for the command

@@ -10,6 +10,13 @@
 #
 # Run from anywhere: bash tests/test-e2e.sh   (exit code = #failures)
 set -uo pipefail
+# CLAUDE_PID is SCRUBBED, not inherited (0.5.0): Claude Code exports its pid to
+# every child, so a suite run from inside a Claude Code session would make the
+# hooks write per-lineage arms (pending.<pid>) where these fixtures expect the
+# bare `pending`, and go red on an untouched tree while CI stays green — the
+# same trap ANTHROPIC_BASE_URL set (tests/test-hooks.sh). The lineage rules
+# have their own suite, tests/test-concurrent.sh, which sets it per call.
+export CLAUDE_PID=""
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
@@ -218,22 +225,24 @@ ck "7.6 B rehydrates its own thread" 'printf "%s" "$OUT" | jq -e ".hookSpecificO
 ck "7.7 own arm -> no cross-session warning" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
 
 # Session A's arm (SESS-A) is still sitting there, but the digest at this point
-# is owned by SESS-B (B claimed it at 7.6). Rehydrating now is INCOHERENT: the
-# arm points at a thread its armer (A) never wrote — B overwrote the digest
-# beside A's arm. STILL rehydrates (invariant 3), but is warned.
+# is owned by SESS-B (B claimed it at 7.6). The arm points at a thread that is
+# no longer in session.md — but A's thread was SIDE-FILED at 7.1, and since
+# 0.5.0 that is exactly what the arm resolves to: A gets ITS thread back, with
+# no warning, because nothing is incoherent about it (invariant 21). The
+# pre-0.5 behaviour (rehydrate session.md and warn "different session") still
+# applies when NO side-file exists for the armer — pinned in
+# tests/test-concurrent.sh "no side-file -> falls back to session.md".
 #
-# NOTE: this pair used to assert "ARM_OWNER(SESS-A) != SESSION_ID(incoming) ->
-# warn", with SESSION_ID hardcoded to SESS-B. That comparison was the defect:
-# it warns on ANY id crossing the arm, including the ordinary /clear case where
-# the incoming id is simply fresh. It happened to still warn here only because
-# SESS-B (the incoming id) also happens to be the digest's owner in this
-# fixture — coincidence, not the real signal. The comparison is now
-# ARM_OWNER(SESS-A) vs DIGEST_OWNER(SESS-B): still incoherent, still warns, but
-# for the right reason — see cycle 9 below for the case this actually fixes.
+# NOTE: this pair once asserted "ARM_OWNER(SESS-A) != SESSION_ID(incoming) ->
+# warn", with SESSION_ID hardcoded to SESS-B. That comparison was the v0.1.5
+# defect: it warns on ANY id crossing the arm, including the ordinary /clear
+# case where the incoming id is simply fresh. Never reintroduce it.
 printf 'SESS-A' > "$TMP/.reload/pending"
 OUT="$(run sessionstart-hook.sh '{"session_id":"SESS-B","source":"clear"}')"
-ck "7.8 incoherent arm STILL rehydrates (v0.1.5 regression guard)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-B-NEXT\")" >/dev/null'
-ck "7.9 incoherent arm warns (arm owner SESS-A != digest owner SESS-B)" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "7.8 A's arm rehydrates A's side-filed thread, not B's slot (v0.1.5 guard: it still rehydrates)" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-A-NEXT\")" >/dev/null'
+ck "7.9 no false 'different session' warning: the side-file is A's own" '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session\")" >/dev/null'
+ck "7.10 banner says where the thread came from" 'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"session.SESS-A.md\")" >/dev/null'
+ck "7.11 B's session.md is untouched by A's rehydrate" 'grep -q "MAGIC-B-NEXT" "$TMP/.reload/session.md"'
 
 echo "== E2E cycle 8: two project dirs are fully isolated =="
 # NOTE: this REPLACES the file's existing `trap 'rm -rf "$TMP"' EXIT` (test-e2e.sh:14).
@@ -370,5 +379,54 @@ ck "10.5 the rehydrate carries the unresolved Open question across" 'printf "%s"
 ck "10.6 the rehydrate carries the immutable mission across" 'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-10-MISSION\")" >/dev/null'
 ck "10.7 the mission survived the rehydrate claim byte-identical" 'grep -qF "MAGIC-10-MISSION the original ask, never rewritten" "$TMP/.reload/session.md"'
 ck "10.8 only session_id was rewritten by the claim" 'grep -q "^session_id: \"CF-B\"" "$TMP/.reload/session.md" && grep -q "^intent: \"carry-forward leg 1\"" "$TMP/.reload/session.md"'
+
+# ── CYCLE 11: TWO LIVE SESSIONS, one directory, through the REAL hooks and scripts ──
+# The 0.5.0 contract (invariant 21): B starting in A's directory takes nothing
+# from A; when both snapshot, each /clear gets ITS OWN thread back; the journal
+# has the whole story. A and B are two live processes here: A is a background
+# `sleep` (its pid is alive for the whole cycle), B is this shell.
+echo "== E2E cycle 11: two live sessions — B starts fresh, both snapshot, each rehydrates its own thread =="
+rm -rf "$TMP/.reload"; mkdir -p "$TMP/.reload"
+sleep 600 & PA=$!; PB=$$
+trap 'kill "$PA" 2>/dev/null; rm -rf "$TMP" "$TMP_B"' EXIT
+runp(){ printf '%s' "$3" | CLAUDE_PID="$1" CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/$2"; }
+snapshot(){ # snapshot <pid> <sid> <magic>: what /snapshot does — PreToolUse guard, Write, arm-reload.sh
+  printf '%s' "{\"session_id\":\"$2\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/.reload/session.md\"}}" \
+    | CLAUDE_PID="$1" CLAUDE_PROJECT_DIR="$TMP" CLAUDE_PLUGIN_ROOT="$(dirname "$H")" bash "$H/pretooluse-hook.sh"
+  printf -- '---\nsession_id: "%s"\nmission: "m"\nupdated_at: "x"\nintent: "%s thread"\n---\n## Done this stretch\n- done\n## In flight\n- nothing\n## Next concrete step\n%s\n## Open questions & risks\n- none\n' "$2" "$2" "$3" > "$TMP/.reload/session.md"
+  CLAUDE_PID="$1" CLAUDE_PROJECT_DIR="$TMP" bash "$(dirname "$H")/scripts/arm-reload.sh" "$2" >/dev/null
+}
+# Session A boots and snapshots.
+runp "$PA" sessionstart-hook.sh '{"session_id":"A1","source":"startup","model":"claude-opus-4-8"}' >/dev/null
+snapshot "$PA" A1 MAGIC-11A-NEXT >/dev/null
+ck "11.1 A armed its own slot" '[ -f "$TMP/.reload/pending.$PA" ]'
+# Session B starts in the same directory: takes NOTHING from A.
+OUT="$(runp "$PB" sessionstart-hook.sh '{"session_id":"B1","source":"startup","model":"claude-opus-4-8"}')"
+ck "11.2 B starts fresh (no injection)"           '! printf "%s" "$OUT" | jq -e ".hookSpecificOutput" >/dev/null'
+ck "11.3 B is told A's reload was left in place"  'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"another live session\")" >/dev/null'
+ck "11.4 A's arm survived"                        '[ -f "$TMP/.reload/pending.$PA" ]'
+ck "11.5 A's digest was not claimed by B"         'grep -q "^session_id: \"A1\"" "$TMP/.reload/session.md"'
+# B snapshots: A's live digest is side-filed, B's lands, B arms its own slot.
+OUT="$(snapshot "$PB" B1 MAGIC-11B-NEXT)"
+ck "11.6 B was warned it displaced A's digest"    'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"A1\")" >/dev/null'
+ck "11.7 A's thread is side-filed"                'grep -q "MAGIC-11A-NEXT" "$TMP/.reload/session.A1.md"'
+ck "11.8 both arms coexist"                       '[ -f "$TMP/.reload/pending.$PA" ] && [ -f "$TMP/.reload/pending.$PB" ]'
+# A /clears: gets A's thread (the side-file), leaves B's arm and B's slot alone.
+OUT="$(runp "$PA" sessionstart-hook.sh '{"session_id":"A2","source":"clear"}')"
+ck "11.9 A rehydrates A's own thread"             'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-11A-NEXT\")" >/dev/null'
+ck "11.10 not B's"                                '! printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-11B-NEXT\")" >/dev/null'
+ck "11.11 A's banner names the side-file"         'printf "%s" "$OUT" | jq -e ".systemMessage|test(\"session.A1.md\")" >/dev/null'
+ck "11.12 A consumed only its own arm"            '[ ! -e "$TMP/.reload/pending.$PA" ] && [ -f "$TMP/.reload/pending.$PB" ]'
+ck "11.13 session.md is still B's, unclaimed"     'grep -q "^session_id: \"B1\"" "$TMP/.reload/session.md"'
+# B /clears: gets B's thread from the slot and claims it.
+OUT="$(runp "$PB" sessionstart-hook.sh '{"session_id":"B2","source":"clear"}')"
+ck "11.14 B rehydrates B's own thread"            'printf "%s" "$OUT" | jq -e ".hookSpecificOutput.additionalContext|test(\"MAGIC-11B-NEXT\")" >/dev/null'
+ck "11.15 B's rehydrate warns nothing"            '! printf "%s" "$OUT" | jq -e ".systemMessage|test(\"different session|another live session\")" >/dev/null'
+ck "11.16 B claimed the slot"                     'grep -q "^session_id: \"B2\"" "$TMP/.reload/session.md"'
+ck "11.17 no arm left behind"                     '[ -z "$(ls "$TMP"/.reload/pending* 2>/dev/null)" ]'
+# The journal has the whole story, in order.
+SEQ="$(awk "{print \$2}" "$TMP/.reload/journal" | tr "\n" ",")"
+ck "11.18 the journal recorded the sequence"      '[ "$SEQ" = "snapshot,arm,defer,snapshot,sidefile,arm,rehydrate,rehydrate," ]'
+ck "11.19 the journal names both processes"       'grep -q "pid=$PA" "$TMP/.reload/journal" && grep -q "pid=$PB" "$TMP/.reload/journal"'
 
 echo; echo "RESULT: $pass passed, $fail failed"; exit $fail

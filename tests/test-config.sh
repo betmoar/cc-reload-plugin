@@ -2,6 +2,13 @@
 # shellcheck disable=SC2034  # OUT is consumed inside ck()'s eval'd assertions
 # reload-config.sh smoke tests. Run: bash tests/test-config.sh
 set -uo pipefail
+# CLAUDE_PID is SCRUBBED, not inherited (0.5.0): Claude Code exports its pid to
+# every child, so a suite run from inside a Claude Code session would make the
+# hooks write per-lineage arms (pending.<pid>) where these fixtures expect the
+# bare `pending`, and go red on an untouched tree while CI stays green — the
+# same trap ANTHROPIC_BASE_URL set (tests/test-hooks.sh). The lineage rules
+# have their own suite, tests/test-concurrent.sh, which sets it per call.
+export CLAUDE_PID=""
 S="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
